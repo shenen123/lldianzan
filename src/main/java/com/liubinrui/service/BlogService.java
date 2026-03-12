@@ -55,4 +55,11 @@ public interface BlogService extends IService<Blog> {
     Boolean subThumb(Long id);
 
     List<Blog> searchThumbed(User loginUser);
+    /**
+     * 从博客表拉取关注博主的最新博客
+     * @param followerId 粉丝ID（当前用户）
+     * @param lastPullTime 最后拉取时间戳（毫秒）
+     * @return 博客列表
+     */
+    List<Blog> listFollowedUserBlog(Long followerId, Long lastPullTime);
 }

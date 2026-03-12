@@ -9,6 +9,7 @@ import co.elastic.clients.elasticsearch._types.SortOrder;
 import co.elastic.clients.elasticsearch._types.query_dsl.BoolQuery;
 import co.elastic.clients.elasticsearch._types.query_dsl.Query;
 import co.elastic.clients.elasticsearch._types.query_dsl.QueryBuilders;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
@@ -18,6 +19,7 @@ import com.liubinrui.constant.CommonConstant;
 import com.liubinrui.exception.ThrowUtils;
 import com.liubinrui.mapper.BlogMapper;
 import com.liubinrui.mapper.ThumbMapper;
+import com.liubinrui.mapper.UserFollowMapper;
 import com.liubinrui.model.dto.blog.BlogEsDTO;
 import com.liubinrui.model.dto.blog.BlogQueryRequest;
 import com.liubinrui.model.entity.Blog;
@@ -35,6 +37,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.elasticsearch.client.elc.NativeQuery;
 import org.springframework.data.elasticsearch.core.ElasticsearchOperations;
@@ -53,7 +56,9 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements Bl
     private UserService userService;
     @Resource
     private BlogMapper blogMapper;
-
+    @Autowired
+    @Lazy
+    private UserFollowMapper userFollowMapper;
     @Autowired
     private ThumbMapper thumbMapper;
     @Resource
@@ -344,4 +349,23 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements Bl
         };
     }
 
+    /**
+     * 从博客表拉取关注博主的最新博客
+     */
+    @Override
+    public List<Blog> listFollowedUserBlog(Long followerId, Long lastPullTime) {
+        // 1. 先获取当前用户关注的所有博主ID
+        Set<Long> followedUserIds = userFollowMapper.listFollowedUserIds(followerId);
+        if (followedUserIds.isEmpty()) {
+            return List.of();
+        }
+
+        // 2. 拉取这些博主在lastPullTime之后发布的博客
+        LambdaQueryWrapper<Blog> queryWrapper = new LambdaQueryWrapper<>();
+        queryWrapper.in(Blog::getUserId, followedUserIds)  // 博主ID在关注列表中
+                .gt(Blog::getCreateTime, new java.util.Date(lastPullTime))  // 增量获取
+                .orderByDesc(Blog::getCreateTime);  // 按发布时间倒序
+
+        return blogMapper.selectList(queryWrapper);
+    }
 }

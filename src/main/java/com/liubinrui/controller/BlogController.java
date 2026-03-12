@@ -12,11 +12,14 @@ import com.liubinrui.exception.ThrowUtils;
 import com.liubinrui.model.dto.blog.BlogAddRequest;
 import com.liubinrui.model.dto.blog.BlogQueryRequest;
 import com.liubinrui.model.dto.blog.BlogUpdateRequest;
+import com.liubinrui.model.dto.msg.PushMsgDTO;
 import com.liubinrui.model.entity.Blog;
 
 import com.liubinrui.model.entity.User;
 import com.liubinrui.model.vo.BlogVO;
+import com.liubinrui.service.BlogPushService;
 import com.liubinrui.service.BlogService;
+import com.liubinrui.service.FollowerMsgService;
 import com.liubinrui.service.UserService;
 import jakarta.annotation.Resource;
 import jakarta.servlet.http.HttpServletRequest;
@@ -37,7 +40,11 @@ public class BlogController {
 
     @Resource
     private UserService userService;
+    @Resource
+    private BlogPushService blogPushService;
 
+    @Resource
+    private FollowerMsgService followerMsgService;
     @PostMapping("/add")
     public BaseResponse<Long> addBlog(@RequestBody BlogAddRequest blogAddRequest, HttpServletRequest request) {
         ThrowUtils.throwIf(blogAddRequest == null, ErrorCode.PARAMS_ERROR);
@@ -51,8 +58,19 @@ public class BlogController {
         boolean result = blogService.save(blog);
         ThrowUtils.throwIf(!result, ErrorCode.OPERATION_ERROR);
         // 返回新写入的数据 id
-        long newblogId = blog.getId();
-        return ResultUtils.success(newblogId);
+        long newBlogId = blog.getId();
+        // 异步推送（不阻塞发布接口）
+        blogPushService.asyncPushBlogToFollowers(blog);
+        return ResultUtils.success(newBlogId);
+    }
+
+
+    /**
+     * 粉丝获取未读消息
+     */
+    @GetMapping("/msg/unread")
+    public List<PushMsgDTO> getUnreadMsg(@RequestParam Long followerId, @RequestParam long lastPullTime) {
+        return followerMsgService.getUnreadMsg(followerId, lastPullTime);
     }
 
     @PostMapping("/delete")
