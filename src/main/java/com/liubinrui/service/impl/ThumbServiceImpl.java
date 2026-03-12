@@ -5,12 +5,14 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.liubinrui.common.ErrorCode;
+import com.liubinrui.config.RabbitMqConfig;
 import com.liubinrui.enums.BlogActionEnum;
 import com.liubinrui.exception.BusinessException;
 import com.liubinrui.exception.ThrowUtils;
 import com.liubinrui.heavykeeper.HeavyKeeperRateLimiter;
 import com.liubinrui.mapper.BlogMapper;
 import com.liubinrui.mapper.ThumbMapper;
+import com.liubinrui.model.dto.mq.BlogLikeMqDTO;
 import com.liubinrui.model.dto.thumb.ThumbAddRequest;
 import com.liubinrui.model.dto.thumb.ThumbDeleteRequest;
 import com.liubinrui.model.dto.thumb.ThumbQueryRequest;
@@ -25,7 +27,9 @@ import com.liubinrui.service.UserService;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.Resource;
 import jakarta.servlet.http.HttpServletRequest;
+import lombok.extern.slf4j.Slf4j;
 import org.redisson.api.*;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -34,7 +38,7 @@ import org.springframework.stereotype.Service;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
-
+@Slf4j
 @Service
 public class ThumbServiceImpl extends ServiceImpl<ThumbMapper, Thumb> implements ThumbService {
     @Autowired
@@ -55,7 +59,8 @@ public class ThumbServiceImpl extends ServiceImpl<ThumbMapper, Thumb> implements
     private BlogService blogService;
     @Autowired
     private HotBlogService hotBlogService;
-
+    @Resource
+    private RabbitTemplate rabbitTemplate;
     private HeavyKeeperRateLimiter[] heavyKeeperShards=new HeavyKeeperRateLimiter[4];
 
     // ========== 初始化 HeavyKeeper 分片（大厂标准：单例+分片） ==========
@@ -76,60 +81,79 @@ public class ThumbServiceImpl extends ServiceImpl<ThumbMapper, Thumb> implements
         Long blogId = doThumbRequest.getBlogId();
         User loginUser = userService.getLoginUser(request);
         Long userId = loginUser.getId();
+
         String blogIdStr = blogId.toString();
         String localKey = userId + "_" + blogId;
-        int slot = userId.hashCode() & 3; // 分片 0~3，防大Key
+        int slot = userId.hashCode() & 3;
         String userLikeRedisKey = USER_LIKE_PREFIX + slot + ":" + userId;
-        // HeavyKeeper 高频检测
-        Boolean localLiked = userLikeLocalCache.getIfPresent(localKey);
+
+        // 1. HeavyKeeper 高频检测 (保留，防刷)
         String hkKey = userId + "_" + blogId;
         if (heavyKeeperShards[slot].isOverLimit(hkKey)) {
-            throw new BusinessException(ErrorCode.OPERATION_ERROR, "操作过于频繁，请5分钟后重试（单日对同一内容操作上限10次）");
+            throw new BusinessException(ErrorCode.OPERATION_ERROR, "操作过于频繁，请5分钟后重试");
         }
-        ThrowUtils.throwIf(Boolean.TRUE.equals(localLiked), ErrorCode.OPERATION_ERROR, "用户已点赞，不能重复点赞");
-        // ========== 2. Redis 缓存 ==========
+
+        // 2. 本地缓存快速判重 (保留)
+        Boolean localLiked = userLikeLocalCache.getIfPresent(localKey);
+        if (Boolean.TRUE.equals(localLiked)) {
+            throw new BusinessException(ErrorCode.OPERATION_ERROR, "用户已点赞");
+        }
+
+        // 3. Redis 快速判重 (保留)
         RMap<String, String> userLikeMap = redissonClient.getMap(userLikeRedisKey);
-        boolean redisHas = userLikeMap.containsKey(blogIdStr);
-        if (redisHas) {
+        if (userLikeMap.containsKey(blogIdStr)) {
             userLikeLocalCache.put(localKey, true);
-            ThrowUtils.throwIf(redisHas, ErrorCode.OPERATION_ERROR, "用户已点赞，不能重复点赞");
+            throw new BusinessException(ErrorCode.OPERATION_ERROR, "用户已点赞");
         }
-        // ========== 3. 分布式锁 ==========
+
+        // 4. 分布式锁 (保留，防止并发重复提交)
         String lockKey = LOCK_LIKE_PREFIX + userId + ":" + blogId;
         RLock lock = redissonClient.getLock(lockKey);
 
         try {
-            // 等待100ms，持有1s，非常适合点赞
-            boolean locked = lock.tryLock(100, 1000, TimeUnit.MILLISECONDS);
-            if (!locked) {
+            // 尝试获取锁
+            if (!lock.tryLock(100, 1000, TimeUnit.MILLISECONDS)) {
                 throw new BusinessException(ErrorCode.OPERATION_ERROR, "请求太频繁，请稍后重试");
             }
 
-            // 二次校验,防止多机点赞
+            // 5. 二次校验 (双重检查锁模式)
             if (userLikeMap.containsKey(blogIdStr)) {
                 userLikeLocalCache.put(localKey, true);
-                throw new BusinessException(ErrorCode.OPERATION_ERROR, "用户已点赞，不能重复点赞");
+                throw new BusinessException(ErrorCode.OPERATION_ERROR, "用户已点赞");
             }
 
-            // ========== 4. DB 插入点赞记录 ==========
-            Thumb thumb = new Thumb();
-            thumb.setUserId(userId);
-            thumb.setBlogId(blogId);
-            thumbMapper.insert(thumb);
-            // 记录点赞行为并更新热度
-            boolean isSuccess = hotBlogService.recordUserAction(userId, blogId, BlogActionEnum.LIKE);
-            blogService.update().setSql("thumb_count = thumb_count + 1").eq("id", blogId).update();
-            // ========== 5. Redis 计数 +1（异步） ==========
-            // 1. 定义变量类型改为 RAtomicLong
-            RAtomicLong atomicCount = redissonClient.getAtomicLong(blog_LIKE_COUNT_PREFIX + blogId);
-            // 2. 直接调用 (和之前一样，但绝对不会报错)
-            atomicCount.incrementAndGetAsync();
-            // ========== 6. Redis Hash 写入（异步） ==========
-            userLikeMap.putAsync(blogIdStr, thumb.getId().toString());
-            userLikeMap.expireAsync(30, TimeUnit.DAYS);
-            // ========== 7. 本地缓存 ==========
-            userLikeLocalCache.put(localKey, true);
+            // --- 【核心修改】准备发送 MQ 消息，不再直接操作 DB ---
 
+            // 5.1 查询博主 ID (需要知道是谁的博客，以便消费者更新博主的总获赞数)
+            // 注意：这里需要查一次 DB 或缓存获取 blog 的 userId。如果 blog 对象有缓存最好。
+            Blog blog = blogService.getById(blogId);
+            if (blog == null) {
+                throw new BusinessException(ErrorCode.NOT_FOUND_ERROR, "博客不存在");
+            }
+
+            // 5.2 构建消息
+            BlogLikeMqDTO mqDTO = new BlogLikeMqDTO();
+            mqDTO.setUserId(userId);
+            mqDTO.setBlogId(blogId);
+            mqDTO.setTargetUserId(blog.getUserId());
+            mqDTO.setType(1); // 1 代表点赞
+
+            // 5.3 发送消息
+            log.info("🚀 [点赞] 发送 MQ 消息 -> User:{}, Blog:{}", userId, blogId);
+            rabbitTemplate.convertAndSend(
+                    RabbitMqConfig.BLOG_LIKE_EXCHANGE,
+                    RabbitMqConfig.BLOG_LIKE_ROUTING_KEY,
+                    mqDTO
+            );
+
+            // 6. Redis 状态标记 (异步/非阻塞)
+            // 即使 MQ 发送成功，我们也要先标记用户已点赞，防止用户瞬间再次点击
+            // 使用 putAsync 不阻塞当前线程
+            userLikeMap.putAsync(blogIdStr, "1");
+            userLikeMap.expireAsync(30, TimeUnit.DAYS);
+
+            // 7. 本地缓存标记
+            userLikeLocalCache.put(localKey, true);
             return true;
 
         } catch (InterruptedException e) {
@@ -144,49 +168,78 @@ public class ThumbServiceImpl extends ServiceImpl<ThumbMapper, Thumb> implements
 
     @Override
     public Boolean undoThumb(ThumbDeleteRequest deleteRequest, HttpServletRequest request) {
-        ThrowUtils.throwIf(deleteRequest == null, ErrorCode.PARAMS_ERROR);
         Long blogId = deleteRequest.getBlogId();
         User loginUser = userService.getLoginUser(request);
         Long userId = loginUser.getId();
+
         String blogIdStr = blogId.toString();
         String localKey = userId + "_" + blogId;
         int slot = userId.hashCode() & 3;
         String userLikeRedisKey = USER_LIKE_PREFIX + slot + ":" + userId;
-        //
+
+        // 1. HeavyKeeper 检测 (保留)
         String hkKey = userId + "_" + blogId;
         if (heavyKeeperShards[slot].isOverLimit(hkKey)) {
-            throw new BusinessException(ErrorCode.OPERATION_ERROR, "操作过于频繁，请5分钟后重试（单日对同一内容操作上限10次）");
+            throw new BusinessException(ErrorCode.OPERATION_ERROR, "操作过于频繁");
         }
+
+        // 2. Redis 判空 (保留)
         RMap<String, String> userLikeMap = redissonClient.getMap(userLikeRedisKey);
         if (!userLikeMap.containsKey(blogIdStr)) {
             userLikeLocalCache.invalidate(localKey);
             throw new BusinessException(ErrorCode.OPERATION_ERROR, "未点赞，无法取消");
         }
 
+        // 3. 分布式锁 (保留)
         String lockKey = LOCK_LIKE_PREFIX + userId + ":" + blogId;
         RLock lock = redissonClient.getLock(lockKey);
 
         try {
-            boolean locked = lock.tryLock(100, 1000, TimeUnit.MILLISECONDS);
-            if (!locked) {
-                throw new BusinessException(ErrorCode.OPERATION_ERROR, "请求太频繁，请稍后重试");
+            if (!lock.tryLock(100, 1000, TimeUnit.MILLISECONDS)) {
+                throw new BusinessException(ErrorCode.OPERATION_ERROR, "请求太频繁");
             }
-            // DB删除
-            thumbMapper.deleteByUserIdAnalogId(userId, blogId);
-            blogService.update().setSql("thumb_count = thumb_count - 1").eq("id", blogId).update();
-            // 计数-1
-            // 1. 定义变量类型改为 RAtomicLong
-            RAtomicLong atomicCount = redissonClient.getAtomicLong(blog_LIKE_COUNT_PREFIX + blogId);
-            // 取消点赞时
-            atomicCount.decrementAndGetAsync();
-            // 重置点赞热度（点赞增量为5）
-            hotBlogService.resetLikeAction(userId, blogId, 5);
-            // Redis删除
+
+            // 4. 二次校验
+            if (!userLikeMap.containsKey(blogIdStr)) {
+                userLikeLocalCache.invalidate(localKey);
+                throw new BusinessException(ErrorCode.OPERATION_ERROR, "未点赞，无法取消");
+            }
+
+            // --- 【核心修改】发送 MQ 消息 ---
+
+            // 4.1 查询博主 ID
+            Blog blog = blogService.getById(blogId);
+            if (blog == null) {
+                // 博客不存在时，直接清理本地状态并返回，不需要发 MQ
+                userLikeMap.removeAsync(blogIdStr);
+                userLikeLocalCache.invalidate(localKey);
+                return true;
+            }
+
+            // 4.2 构建消息
+            BlogLikeMqDTO mqDTO = new BlogLikeMqDTO();
+            mqDTO.setUserId(userId);
+            mqDTO.setBlogId(blogId);
+            mqDTO.setTargetUserId(blog.getUserId());
+            mqDTO.setType(0); // 0 代表取消点赞
+
+            // 4.3 发送消息
+            log.info("🚀 [取消点赞] 发送 MQ 消息 -> User:{}, Blog:{}", userId, blogId);
+            rabbitTemplate.convertAndSend(
+                    RabbitMqConfig.BLOG_LIKE_EXCHANGE,
+                    RabbitMqConfig.BLOG_LIKE_ROUTING_KEY,
+                    mqDTO
+            );
+
+            // 5. 清理 Redis 状态 (异步)
             userLikeMap.removeAsync(blogIdStr);
-            // 本地失效
+
+            // 6. 清理本地缓存
             userLikeLocalCache.invalidate(localKey);
-            // ========== 新增：8. 重置 HeavyKeeper 计数 ==========
-            heavyKeeperShards[slot].reset(hkKey);
+
+            // 7. 重置 HeavyKeeper (可选，取消点赞通常不需要重置频次限制，看业务需求)
+            // heavyKeeperShards[slot].reset(hkKey);
+
             return true;
 
         } catch (InterruptedException e) {
