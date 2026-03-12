@@ -27,6 +27,7 @@ public interface BlogMapper extends BaseMapper<Blog> {
     @Select("select * from blog where update_time >= #{minUpdateTime}")
     List<Blog> listblog(Date fiveMinutesAgoDate);
 
+    void batchUpdateHotScore(List<Blog> updateList);
 }
 
 

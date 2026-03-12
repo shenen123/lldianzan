@@ -21,13 +21,17 @@ import com.liubinrui.service.BlogPushService;
 import com.liubinrui.service.BlogService;
 import com.liubinrui.service.FollowerMsgService;
 import com.liubinrui.service.UserService;
+import com.liubinrui.service.impl.HotBlogService;
 import jakarta.annotation.Resource;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.BeanUtils;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import java.util.Objects;
+import java.util.stream.Collectors;
 
 
 @RestController
@@ -42,9 +46,11 @@ public class BlogController {
     private UserService userService;
     @Resource
     private BlogPushService blogPushService;
-
+    @Autowired
+    private HotBlogService hotBlogService;
     @Resource
     private FollowerMsgService followerMsgService;
+
     @PostMapping("/add")
     public BaseResponse<Long> addBlog(@RequestBody BlogAddRequest blogAddRequest, HttpServletRequest request) {
         ThrowUtils.throwIf(blogAddRequest == null, ErrorCode.PARAMS_ERROR);
@@ -62,15 +68,6 @@ public class BlogController {
         // 异步推送（不阻塞发布接口）
         blogPushService.asyncPushBlogToFollowers(blog);
         return ResultUtils.success(newBlogId);
-    }
-
-
-    /**
-     * 粉丝获取未读消息
-     */
-    @GetMapping("/msg/unread")
-    public List<PushMsgDTO> getUnreadMsg(@RequestParam Long followerId, @RequestParam long lastPullTime) {
-        return followerMsgService.getUnreadMsg(followerId, lastPullTime);
     }
 
     @PostMapping("/delete")
@@ -119,11 +116,9 @@ public class BlogController {
     @GetMapping("/get/vo")
     public BaseResponse<BlogVO> getBlogVOById(long id, HttpServletRequest request) {
         ThrowUtils.throwIf(id <= 0, ErrorCode.PARAMS_ERROR);
-        // 查询数据库
-        Blog blog = blogService.getById(id);
-        ThrowUtils.throwIf(blog == null, ErrorCode.NOT_FOUND_ERROR);
-        // 获取封装类
-        return ResultUtils.success(blogService.getblogVO(blog, request));
+        // 优先从热门缓存获取
+        Blog hotBlog = hotBlogService.getBlog(id);
+        return ResultUtils.success(BlogVO.objToVo(hotBlog));
     }
 
     @PostMapping("/list/page")
@@ -171,5 +166,29 @@ public class BlogController {
         User loginUser = userService.getLoginUser(request);
         List<Blog> blogList = blogService.searchThumbed(loginUser);
         return ResultUtils.success(blogList);
+    }
+
+    @PostMapping("/search/hot/top")
+    public Page<BlogVO> getHotBlogTopN(int pageNum, int pageSize, HttpServletRequest request) {
+        // 获取热门博客ID列表
+        List<Long> hotBlogIds = hotBlogService.getHotBlogTopN();
+        // 分页处理
+        int start = (pageNum - 1) * pageSize;
+        int end = Math.min(start + pageSize, hotBlogIds.size());
+        if (start >= hotBlogIds.size()) {
+            return new Page<>(pageNum, pageSize, 0);
+        }
+        List<Long> pageBlogIds = hotBlogIds.subList(start, end);
+
+        // 转换为BlogVO列表
+        List<BlogVO> blogVOList = pageBlogIds.stream()
+                .map(hotBlogService::getBlog)
+                .filter(Objects::nonNull)
+                .map(BlogVO::objToVo)
+                .collect(Collectors.toList());
+
+        Page<BlogVO> page = new Page<>(pageNum, pageSize, hotBlogIds.size());
+        page.setRecords(blogVOList);
+        return page;
     }
 }

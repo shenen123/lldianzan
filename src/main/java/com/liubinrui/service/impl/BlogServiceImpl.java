@@ -64,6 +64,7 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements Bl
     @Resource
     private final ElasticsearchOperations elasticsearchOperations;
 
+
     public BlogServiceImpl(ElasticsearchOperations elasticsearchOperations) {
         this.elasticsearchOperations = elasticsearchOperations;
     }

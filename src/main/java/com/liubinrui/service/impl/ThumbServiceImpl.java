@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.liubinrui.common.ErrorCode;
+import com.liubinrui.enums.BlogActionEnum;
 import com.liubinrui.exception.BusinessException;
 import com.liubinrui.exception.ThrowUtils;
 import com.liubinrui.heavykeeper.HeavyKeeperRateLimiter;
@@ -52,6 +53,8 @@ public class ThumbServiceImpl extends ServiceImpl<ThumbMapper, Thumb> implements
     @Autowired
     @Lazy
     private BlogService blogService;
+    @Autowired
+    private HotBlogService hotBlogService;
 
     private HeavyKeeperRateLimiter[] heavyKeeperShards=new HeavyKeeperRateLimiter[4];
 
@@ -113,6 +116,8 @@ public class ThumbServiceImpl extends ServiceImpl<ThumbMapper, Thumb> implements
             thumb.setUserId(userId);
             thumb.setBlogId(blogId);
             thumbMapper.insert(thumb);
+            // 记录点赞行为并更新热度
+            boolean isSuccess = hotBlogService.recordUserAction(userId, blogId, BlogActionEnum.LIKE);
             blogService.update().setSql("thumb_count = thumb_count + 1").eq("id", blogId).update();
             // ========== 5. Redis 计数 +1（异步） ==========
             // 1. 定义变量类型改为 RAtomicLong
@@ -174,6 +179,8 @@ public class ThumbServiceImpl extends ServiceImpl<ThumbMapper, Thumb> implements
             RAtomicLong atomicCount = redissonClient.getAtomicLong(blog_LIKE_COUNT_PREFIX + blogId);
             // 取消点赞时
             atomicCount.decrementAndGetAsync();
+            // 重置点赞热度（点赞增量为5）
+            hotBlogService.resetLikeAction(userId, blogId, 5);
             // Redis删除
             userLikeMap.removeAsync(blogIdStr);
             // 本地失效

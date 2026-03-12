@@ -38,6 +38,8 @@ public class Blog implements Serializable {
      */
     private Integer thumbCount;
 
+    private Integer hotScore;
+
     /**
      * 创建时间
      */

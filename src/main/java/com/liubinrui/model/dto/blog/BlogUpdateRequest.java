@@ -2,6 +2,7 @@ package com.liubinrui.model.dto.blog;
 
 import lombok.Data;
 
+import java.io.Serial;
 import java.io.Serializable;
 
 @Data

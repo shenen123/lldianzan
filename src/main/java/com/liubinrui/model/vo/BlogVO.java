@@ -45,7 +45,7 @@ public class BlogVO implements Serializable {
      */
     private Date updateTime;
 
-
+    private Integer hotScore;
     /**
      * 创建用户信息
      */

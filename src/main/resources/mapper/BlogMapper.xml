@@ -10,13 +10,13 @@
         <result property="title" column="title" jdbcType="VARCHAR"/>
         <result property="content" column="content" jdbcType="VARCHAR"/>
         <result property="thumbCount" column="thumb_count" jdbcType="INTEGER"/>
+        <result property="hotScore" column="hot_score" jdbcType="INTEGER"/>
         <result property="createTime" column="create_time" jdbcType="TIMESTAMP"/>
         <result property="updateTime" column="update_time" jdbcType="TIMESTAMP"/>
     </resultMap>
 
     <sql id="Base_Column_List">
-        id
-        ,userId,title,content,thumb_count,
+        id,userId,title,content,thumb_count,hot_score
         create_time,update_time
     </sql>
 
@@ -49,7 +49,7 @@
         UPDATE blog
         SET thumb_count = GREATEST(thumb_count + #{delta}, 0)
         WHERE id = #{blogId}
-        AND thumb_count + #{delta} >= 0; <!-- 可选：提前过滤无效更新 -->
+        AND thumb_count + #{delta} >= 0;
     </update>
 
     <update id="updateBatchLikeCount">
@@ -67,4 +67,18 @@
     <select id="selectAllblogId" resultType="java.lang.Long">
         SELECT id FROM blog
     </select>
+
+    <!-- 批量更新博客热度值：batchUpdateHotScore -->
+    <update id="batchUpdateHotScore">
+        UPDATE blog
+        SET hot_score = CASE id
+        <foreach collection="list" item="item" separator="">
+            WHEN #{item.id} THEN #{item.hotScore}
+        </foreach>
+        END
+        WHERE id IN
+        <foreach collection="list" item="item" open="(" separator="," close=")">
+            #{item.id}
+        </foreach>
+    </update>
 </mapper>
