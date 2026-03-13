@@ -16,7 +16,6 @@ public interface BlogService extends IService<Blog> {
 
     /**
      * 校验数据
-     *
      * @param blog
      * @param add 对创建的数据进行校验
      */
@@ -24,7 +23,6 @@ public interface BlogService extends IService<Blog> {
 
     /**
      * 获取查询条件
-     *
      * @param blogQueryRequest
      * @return
      */
@@ -32,7 +30,6 @@ public interface BlogService extends IService<Blog> {
     
     /**
      * 获取博客封装
-     *
      * @param blog
      * @param request
      * @return
@@ -41,20 +38,19 @@ public interface BlogService extends IService<Blog> {
 
     /**
      * 分页获取博客封装
-     *
      * @param blogPage
      * @param request
      * @return
      */
     Page<BlogVO> getblogVOPage(Page<Blog> blogPage, HttpServletRequest request);
 
+    /**
+     * 从ES中查找
+     * @param request
+     * @return
+     */
     Page<Blog> searchFromEs(BlogQueryRequest request);
 
-    boolean addThumb(Long blogId);
-
-    Boolean subThumb(Long id);
-
-    List<Blog> searchThumbed(User loginUser);
     /**
      * 从博客表拉取关注博主的最新博客
      * @param followerId 粉丝ID（当前用户）

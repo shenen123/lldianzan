@@ -43,14 +43,9 @@ public class BlogLikeMqConsumer {
 
         Long userId = dto.getUserId();
         Long blogId = dto.getBlogId();
-        Long targetUserId = dto.getTargetUserId();
         Integer type = dto.getType();
-        String blogIdStr = blogId.toString();
-
         try {
             if (type == 1) {
-                // === 点赞逻辑 ===
-
                 // 1. DB: 插入点赞记录
                 // 注意：这里可能会因为网络重试导致重复插入，建议数据库加唯一索引 (user_id, blog_id)
                 Thumb thumb = new Thumb();
@@ -96,7 +91,7 @@ public class BlogLikeMqConsumer {
                         .update();
 
                 // 3. 业务: 重置热度
-                hotBlogService.resetLikeAction(userId, blogId, 5);
+                hotBlogService.resetLikeAction(blogId, 5);
 
                 // 4. Redis: 全局计数 -1
                 RAtomicLong atomicCount = redissonClient.getAtomicLong("blog:like:count:" + blogId);

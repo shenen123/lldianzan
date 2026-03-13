@@ -158,25 +158,6 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements Bl
     }
 
     @Override
-    public boolean addThumb(Long blogId) {
-
-        return true;
-    }
-
-    @Override
-    public Boolean subThumb(Long blogId) {
-        ThrowUtils.throwIf(blogId < 0 || blogId == null, ErrorCode.NOT_FOUND_ERROR);
-        boolean result = blogMapper.subThumb(blogId);
-        return true;
-    }
-
-    @Override
-    public List<Blog> searchThumbed(User loginUser) {
-        ThrowUtils.throwIf(loginUser == null, ErrorCode.NO_AUTH_ERROR);
-        return thumbMapper.selectByUserId(loginUser.getId());
-    }
-
-    @Override
     public Page<Blog> searchFromEs(BlogQueryRequest request) {
         try {
             // 1. 尝试执行 ES 查询
@@ -190,6 +171,7 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements Bl
         }
     }
 
+    //数据库分页查询
     public Page<Blog> listBlogByPage(BlogQueryRequest request) {
         ThrowUtils.throwIf(request == null, ErrorCode.PARAMS_ERROR);
 

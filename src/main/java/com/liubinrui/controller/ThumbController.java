@@ -1,5 +1,7 @@
 package com.liubinrui.controller;
 
+import com.alibaba.csp.sentinel.annotation.SentinelResource;
+import com.alibaba.csp.sentinel.slots.block.BlockException;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.liubinrui.annotation.AuthCheck;
 import com.liubinrui.common.BaseResponse;
@@ -32,11 +34,19 @@ public class ThumbController {
     private ThumbService thumbService;
 
     @PostMapping("/add")
+    @SentinelResource(value = "thumbAdd", blockHandler = "handleThumbBlock")
     public BaseResponse<Boolean> doThumb(@RequestBody ThumbAddRequest thumbAddRequest, HttpServletRequest request) {
 
         Boolean result = thumbService.doThumb(thumbAddRequest, request);
         ThrowUtils.throwIf(!result, ErrorCode.OPERATION_ERROR);
         return ResultUtils.success(true);
+    }
+
+    public BaseResponse<Boolean> handleThumbBlock(ThumbAddRequest thumbAddRequest,
+                                                  HttpServletRequest request,
+                                                  BlockException ex) {
+        log.warn("搜索接口被限流或熔断: {}", ex.getClass().getSimpleName());
+        return ResultUtils.error(ErrorCode.OPERATION_ERROR, "操作太频繁，请稍后再试");
     }
 
     @PostMapping("/delete")

@@ -1,5 +1,6 @@
 package com.liubinrui.service.impl;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.liubinrui.enums.BlogActionEnum;
@@ -8,6 +9,8 @@ import com.liubinrui.mapper.BlogMapper;
 import com.liubinrui.model.entity.Blog;
 import com.liubinrui.service.BlogService;
 import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
@@ -18,7 +21,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
-
+import java.util.stream.Collectors;
+@Slf4j
 @Service
 public class HotBlogService {
     @Autowired
@@ -55,7 +59,7 @@ public class HotBlogService {
             .build();
 
     // 缓存3：热门博客详情（Key: blogId，Value: BlogDetail）【新增核心缓存】
-    private final Cache<Long, Blog> hotBlogDetailCache = Caffeine.newBuilder()
+    private final Cache<Long, Blog> hotBlogCache = Caffeine.newBuilder()
             .expireAfterWrite(CACHE_EXPIRE_SEC, TimeUnit.SECONDS) // 与热门列表缓存同过期时间
             .maximumSize(HOT_TOP_N) // 仅缓存热门TopN的详情，节省内存
             .recordStats()
@@ -70,22 +74,90 @@ public class HotBlogService {
             decayHotScore();    // 1. 热度衰减
             sortHotBlogs();     // 2. 重新计算TopN
             refreshAllCache();  // 3. 主动刷新缓存
-            syncHotScoreToDB();
+            syncHotScoreToDB(); // 4. 异步同步数据到DB
         }, 0, SORT_INTERVAL_SEC, TimeUnit.SECONDS);
     }
+
     @PostConstruct
     public void init() {
         loadHotScoreFromDB(); // 此时blogService已注入，可安全调用
     }
+
+    /**
+     * 核心方法：获取单博客详情（优先读热门缓存）
+     *
+     * @param blogId 博客ID
+     * @return 博客详情
+     */
+    public Blog getBlog(Long blogId) {
+        // 1. 直接查热门详情缓存 (Caffeine 速度极快)
+        Blog cache = hotBlogCache.getIfPresent(blogId);
+        if (cache != null) {
+            return cache;
+        }
+
+        // 2. 缓存未命中 -> 查库 (无论是热门还是非热门，都走这里)
+        Blog blog = blogService.getById(blogId);
+        if (blog != null) {
+            // 3. 【关键优化】只有当该博客确实在热门列表中时，才写入热点缓存
+            // 防止非热门博客污染 hotBlogCache (虽然 maximumSize 限制了，但最好逻辑上也控制)
+            List<Long> hotIds = hotBlogListCache.getIfPresent(HOT_BLOG_LIST_KEY);
+            if (hotIds != null && hotIds.contains(blogId)) {
+                blog.setHotScore(getBlogHotScore(blogId));
+                hotBlogCache.put(blogId, blog);
+            }
+        }
+        return blog;
+    }
+
+    private Integer getBlogHotScore(Long blogId) {
+        // 1. 优先读缓存
+        Integer cacheScore = blogHotScoreCache.getIfPresent(blogId);
+        if (cacheScore != null) {
+            return cacheScore;
+        }
+        // 2. 缓存未命中：从原始存储读取并写入缓存（写回）
+        Integer originScore = blogHotScoreMap.getOrDefault(blogId, 0);
+        blogHotScoreCache.put(blogId, originScore);
+        return originScore;
+    }
+
+    public void recordUserAction(Long userId, Long blogId, BlogActionEnum action) {
+        // 示例逻辑：根据不同操作类型计算热度增量
+        int increment = switch (action) {
+            case LIKE -> 5;
+            case COMMENT -> 3;
+            case FORWARD -> 8;
+            default -> 0;
+        };
+        // 限流判断
+        String limitKey = userId + "_" + blogId;
+        // 2. 调用正确的限流方法（isOverLimit返回true=超限/拦截，false=放行）
+        if (rateLimiter.isOverLimit(limitKey)) {
+            return;
+        }
+        // 更新热度值
+        blogHotScoreMap.compute(blogId, (k, v) -> (v == null ? 0 : v) + increment);
+        // 同步更新缓存
+        blogHotScoreCache.put(blogId, blogHotScoreMap.get(blogId));
+    }
+
     private void loadHotScoreFromDB() {
-        // 查询所有博客的ID和热度值（可分页，示例简化为全量）
-        List<Blog> allBlogs = blogService.list();
-        for (Blog blog : allBlogs) {
+        // 查询所有博客的ID和热度值,这里有风险，数据库100万条，则爆炸，不能用list
+        // 只加载热度大于 0 的前 5000 条，避免全表扫描
+        List<Blog> activeBlogs = blogMapper.selectList(
+                new LambdaQueryWrapper<Blog>()
+                        .gt(Blog::getHotScore, 0)
+                        .orderByDesc(Blog::getHotScore)
+                        .last("LIMIT 5000")
+        );
+        for (Blog blog : activeBlogs) {
             blogHotScoreMap.put(blog.getId(), blog.getHotScore());
-            // 同步到缓存
             blogHotScoreCache.put(blog.getId(), blog.getHotScore());
         }
+        log.info("热门博客服务初始化完成，加载 {} 条活跃数据", activeBlogs.size());
     }
+
     private void syncHotScoreToDB() {
         if (blogHotScoreMap.isEmpty()) {
             return;
@@ -101,31 +173,8 @@ public class HotBlogService {
         // 调用Mapper批量更新
         blogMapper.batchUpdateHotScore(updateList);
     }
-    // ========== 基础方法实现 ==========
-    public boolean recordUserAction(Long userId, Long blogId, BlogActionEnum action) {
-        // 示例逻辑：根据不同操作类型计算热度增量
-        int increment = switch (action) {
-            case LIKE -> 5;
-            case COMMENT -> 3;
-            case FORWARD -> 8;
-            default -> 0;
-        };
 
-        // 限流判断
-        String limitKey = userId + "_" + blogId;
-        // 2. 调用正确的限流方法（isOverLimit返回true=超限/拦截，false=放行）
-        if (rateLimiter.isOverLimit(limitKey)) {
-            return false;
-        }
-
-        // 更新热度值
-        blogHotScoreMap.compute(blogId, (k, v) -> (v == null ? 0 : v) + increment);
-        // 同步更新缓存
-        blogHotScoreCache.put(blogId, blogHotScoreMap.get(blogId));
-        return true;
-    }
-
-    public void resetLikeAction(Long userId, Long blogId, double increment) {
+    public void resetLikeAction(Long blogId, double increment) {
         // 修正：将double增量转为int
         int intIncrement = (int) Math.round(increment);
         blogHotScoreMap.compute(blogId, (k, v) -> (v == null ? 0 : v) - intIncrement);
@@ -135,26 +184,17 @@ public class HotBlogService {
 
     private void decayHotScore() {
         blogHotScoreMap.replaceAll((blogId, score) -> {
-            // 修正：衰减后保留整数（四舍五入）
-            int newScore = (int) Math.round(score * HOT_DECAY_FACTOR);
-            // 衰减后同步更新缓存
+            if (score <= 0) return 0;
+            // 【修改点】直接使用 (int) 强制转换，相当于向下取整 (Floor)
+            // 5 * 0.95 = 4.75 -> 4 (而不是 5)
+            // 1 * 0.95 = 0.95 -> 0 (直接归零)
+            int newScore = (int) (score * HOT_DECAY_FACTOR);
+            // 同步更新缓存
             blogHotScoreCache.put(blogId, newScore);
             return newScore;
         });
-    }
-
-    private void sortHotBlogs() {
-        List<Map.Entry<Long, Integer>> sortedList = new ArrayList<>(blogHotScoreMap.entrySet());
-        // 修正：按Integer类型排序
-        sortedList.sort((e1, e2) -> Integer.compare(e2.getValue(), e1.getValue()));
-
-        List<Long> topNList = new ArrayList<>();
-        int takeCount = Math.min(HOT_TOP_N, sortedList.size());
-        for (int i = 0; i < takeCount; i++) {
-            topNList.add(sortedList.get(i).getKey());
-        }
-        // 仅更新内存列表（缓存刷新在refreshAllCache中）
-        hotBlogListCache.put(HOT_BLOG_LIST_KEY, topNList);
+        // 【重要】清理掉所有变为 0 的数据，防止内存泄漏
+        blogHotScoreMap.entrySet().removeIf(entry -> entry.getValue() == 0);
     }
 
     public List<Long> getHotBlogTopN() {
@@ -170,42 +210,18 @@ public class HotBlogService {
         return (cacheList != null) ? new ArrayList<>(cacheList) : new ArrayList<>();
     }
 
-    public Integer getBlogHotScore(Long blogId) {
-        // 1. 优先读缓存
-        Integer cacheScore = blogHotScoreCache.getIfPresent(blogId);
-        if (cacheScore != null) {
-            return cacheScore;
+    private void sortHotBlogs() {
+        List<Map.Entry<Long, Integer>> sortedList = new ArrayList<>(blogHotScoreMap.entrySet());
+        // 修正：按Integer类型排序
+        sortedList.sort((e1, e2) -> Integer.compare(e2.getValue(), e1.getValue()));
+
+        List<Long> topNList = new ArrayList<>();
+        int takeCount = Math.min(HOT_TOP_N, sortedList.size());
+        for (int i = 0; i < takeCount; i++) {
+            topNList.add(sortedList.get(i).getKey());
         }
-
-        // 2. 缓存未命中：从原始存储读取并写入缓存（写回）
-        Integer originScore = blogHotScoreMap.getOrDefault(blogId, 0);
-        blogHotScoreCache.put(blogId, originScore);
-        return originScore;
-    }
-
-    // ========== 新增核心方法 ==========
-
-    /**
-     * 刷新热门博客详情缓存（定时任务/手动触发）
-     * 注：实际业务中，这里需调用DAO层从数据库查询热门博客详情
-     */
-    private void refreshHotBlogDetailCache() {
-        List<Long> hotBlogIds = getHotBlogTopN(); // 获取最新热门列表
-        if (hotBlogIds.isEmpty()) {
-            hotBlogDetailCache.invalidateAll(); // 无热门博客，清空详情缓存
-            return;
-        }
-
-        // 模拟从数据库查询热门博客详情（实际业务替换为DAO查询）
-        for (Long blogId : hotBlogIds) {
-            Blog blog = blogService.getById(blogId); // 查库逻辑
-            if (blog != null) {
-                // 补充热度值（从缓存/原始存储获取）
-                blog.setHotScore(getBlogHotScore(blogId));
-                // 修正：变量名错误 detail → blog
-                hotBlogDetailCache.put(blogId, blog);
-            }
-        }
+        // 仅更新内存列表（缓存刷新在refreshAllCache中）
+        hotBlogListCache.put(HOT_BLOG_LIST_KEY, topNList);
     }
 
     /**
@@ -235,58 +251,45 @@ public class HotBlogService {
     }
 
     /**
-     * 核心方法：获取单博客详情（优先读热门缓存）
-     *
-     * @param blogId 博客ID
-     * @return 博客详情
+     * 刷新热门博客详情缓存（定时任务/手动触发）
      */
-    public Blog getBlog(Long blogId) {
-        // 步骤1：判断该博客是否在热门列表中（优先读缓存）
-        List<Long> hotBlogIds = hotBlogListCache.getIfPresent(HOT_BLOG_LIST_KEY);
-        if (hotBlogIds != null && hotBlogIds.contains(blogId)) {
-            // 步骤2：是热门博客 → 优先读详情缓存
-            Blog cacheDetail = hotBlogDetailCache.getIfPresent(blogId);
-            if (cacheDetail != null) {
-                return cacheDetail; // 直接返回缓存的详情
-            }
-
-            // 步骤3：热门列表命中，但详情缓存未命中 → 查库+更新缓存
-            Blog blog = blogService.getById(blogId);
-            if (blog != null) {
-                blog.setHotScore(getBlogHotScore(blogId));
-                hotBlogDetailCache.put(blogId, blog); // 写入缓存
-                return blog;
-            }
+    private void refreshHotBlogDetailCache() {
+        List<Long> hotBlogIds = getHotBlogTopN(); // 获取最新热门列表
+        if (hotBlogIds.isEmpty()) {
+            hotBlogCache.invalidateAll(); // 无热门博客，清空详情缓存
+            return;
         }
 
-        // 步骤4：非热门博客 → 直接查库（不走缓存）
-        return blogService.getById(blogId);
+        // 批量查询数据库 (一次 SQL 搞定)
+        // 假设 blogService 有一个 listByIds 方法
+        List<Blog> blogs = blogService.listByIds(hotBlogIds);
+
+        // 构建 Map 方便匹配
+        Map<Long, Blog> blogMap = blogs.stream()
+                .collect(Collectors.toMap(Blog::getId, b -> b));
+
+        for (Long blogId : hotBlogIds) {
+            Blog blog = blogMap.get(blogId);
+            if (blog != null) {
+                blog.setHotScore(getBlogHotScore(blogId));
+                hotBlogCache.put(blogId, blog);
+            } else {
+                // 如果数据库里没了，清理缓存
+                hotBlogCache.invalidate(blogId);
+            }
+        }
     }
 
-
-    /**
-     * 手动刷新所有缓存（包含详情缓存）
-     */
-    public void manualRefreshCache() {
-        refreshAllCache();
-    }
-
-    /**
-     * 获取缓存统计（新增详情缓存命中率）
-     */
-    public String getCacheStats() {
-        return "热门列表缓存命中率：" + hotBlogListCache.stats().hitRate() + "\n" +
-                "单博客热度缓存命中率：" + blogHotScoreCache.stats().hitRate() + "\n" +
-                "热门详情缓存命中率：" + hotBlogDetailCache.stats().hitRate();
-    }
-
-    /**
-     * 关闭资源
-     */
-    public void shutdown() {
+    @PreDestroy // 需要引入 jakarta.annotation.PreDestroy
+    public void destroy() {
         scheduler.shutdown();
-        hotBlogListCache.invalidateAll();
-        blogHotScoreCache.invalidateAll();
-        hotBlogDetailCache.invalidateAll(); // 清空详情缓存
+        try {
+            if (!scheduler.awaitTermination(5, TimeUnit.SECONDS)) {
+                scheduler.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            scheduler.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
     }
 }

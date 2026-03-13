@@ -1,5 +1,8 @@
 package com.liubinrui.controller;
 
+import cn.hutool.core.util.ObjUtil;
+import com.alibaba.csp.sentinel.annotation.SentinelResource;
+import com.alibaba.csp.sentinel.slots.block.BlockException;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.liubinrui.annotation.AuthCheck;
 import com.liubinrui.common.BaseResponse;
@@ -12,14 +15,12 @@ import com.liubinrui.exception.ThrowUtils;
 import com.liubinrui.model.dto.blog.BlogAddRequest;
 import com.liubinrui.model.dto.blog.BlogQueryRequest;
 import com.liubinrui.model.dto.blog.BlogUpdateRequest;
-import com.liubinrui.model.dto.msg.PushMsgDTO;
 import com.liubinrui.model.entity.Blog;
 
 import com.liubinrui.model.entity.User;
 import com.liubinrui.model.vo.BlogVO;
 import com.liubinrui.service.BlogPushService;
 import com.liubinrui.service.BlogService;
-import com.liubinrui.service.FollowerMsgService;
 import com.liubinrui.service.UserService;
 import com.liubinrui.service.impl.HotBlogService;
 import jakarta.annotation.Resource;
@@ -48,8 +49,6 @@ public class BlogController {
     private BlogPushService blogPushService;
     @Autowired
     private HotBlogService hotBlogService;
-    @Resource
-    private FollowerMsgService followerMsgService;
 
     @PostMapping("/add")
     public BaseResponse<Long> addBlog(@RequestBody BlogAddRequest blogAddRequest, HttpServletRequest request) {
@@ -114,8 +113,8 @@ public class BlogController {
     }
 
     @GetMapping("/get/vo")
-    public BaseResponse<BlogVO> getBlogVOById(long id, HttpServletRequest request) {
-        ThrowUtils.throwIf(id <= 0, ErrorCode.PARAMS_ERROR);
+    public BaseResponse<BlogVO> getBlogVOById(long id) {
+        ThrowUtils.throwIf(ObjUtil.isEmpty(id) || id <= 0, ErrorCode.PARAMS_ERROR);
         // 优先从热门缓存获取
         Blog hotBlog = hotBlogService.getBlog(id);
         return ResultUtils.success(BlogVO.objToVo(hotBlog));
@@ -150,10 +149,18 @@ public class BlogController {
         return ResultUtils.success(blogService.getblogVOPage(blogPage, request));
     }
 
-    //从ES中查找
+    @SentinelResource(value = "blogSearchPage", // 资源名称，控制台配置时用到
+            blockHandler = "handleSearchBlock" // 限流/熔断后的处理方法
+    )
     @PostMapping("/search/page/vo")
-    public BaseResponse<Page<BlogVO>> searchQuestionVOByPage(@RequestBody BlogQueryRequest questionQueryRequest,
+    public BaseResponse<Page<BlogVO>> searchVOByPage(@RequestBody BlogQueryRequest questionQueryRequest,
                                                              HttpServletRequest request) {
+        try {
+            Thread.sleep(3000);
+            log.warn("【测试熔断】模拟慢查询，休眠了 3 秒...");
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
         long size = questionQueryRequest.getPageSize();
         // 限制爬虫
         ThrowUtils.throwIf(size > 200, ErrorCode.PARAMS_ERROR);
@@ -161,12 +168,29 @@ public class BlogController {
         return ResultUtils.success(blogService.getblogVOPage(questionPage, request));
     }
 
-    @PostMapping("/search/my/thumb")
-    public BaseResponse<List<Blog>> searchThumbedQuestionVO(HttpServletRequest request) {
-        User loginUser = userService.getLoginUser(request);
-        List<Blog> blogList = blogService.searchThumbed(loginUser);
-        return ResultUtils.success(blogList);
+    /**
+     * 限流或熔断后的兜底方法
+     * 注意：该方法必须与原方法在同一类中，且参数列表要多一个 BlockException 类型参数
+     */
+    public BaseResponse<Page<BlogVO>> handleSearchBlock(BlogQueryRequest questionQueryRequest,
+                                                        HttpServletRequest request,
+                                                        BlockException ex) {
+        // 这里可以记录日志，或者直接返回友好的提示
+        log.warn("搜索接口被限流或熔断: {}", ex.getClass().getSimpleName());
+        // 返回空页面或特定错误码，避免前端崩溃
+        Page<BlogVO> emptyPage = new Page<>(0, 0, 0);
+        return ResultUtils.success(emptyPage);
+        // 或者抛出特定的业务异常让前端展示 "系统繁忙"
+        // throw new BusinessException(ErrorCode.SYSTEM_ERROR, "访问人数过多，请稍后再试");
     }
+
+    //查询我收到的点赞
+//    @PostMapping("/search/my/thumb")
+//    public BaseResponse<List<Blog>> searchThumbedQuestionVO(HttpServletRequest request) {
+//        User loginUser = userService.getLoginUser(request);
+//        List<Blog> blogList = blogService.searchThumbed(loginUser);
+//        return ResultUtils.success(blogList);
+//    }
 
     @PostMapping("/search/hot/top")
     public Page<BlogVO> getHotBlogTopN(int pageNum, int pageSize, HttpServletRequest request) {
@@ -175,9 +199,11 @@ public class BlogController {
         // 分页处理
         int start = (pageNum - 1) * pageSize;
         int end = Math.min(start + pageSize, hotBlogIds.size());
+        // 若起始位置超过总长度，返回空列表
         if (start >= hotBlogIds.size()) {
             return new Page<>(pageNum, pageSize, 0);
         }
+        // 从全量列表中，“切”出当前页需要的 ID 子列表。这是一个视图操作，非常快，不涉及数据库查询。
         List<Long> pageBlogIds = hotBlogIds.subList(start, end);
 
         // 转换为BlogVO列表

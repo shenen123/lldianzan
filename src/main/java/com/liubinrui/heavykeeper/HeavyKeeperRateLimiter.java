@@ -177,12 +177,6 @@ public class HeavyKeeperRateLimiter {
         this.baseThreshold = newThreshold;
     }
 
-    /**
-     * 获取当前基础阈值（监控/调试用）
-     */
-    public int getBaseThreshold() {
-        return this.baseThreshold;
-    }
 
     /**
      * 多哈希函数实现（MurmurHash思想，降低冲突率）

@@ -61,16 +61,7 @@ public class ThumbServiceImpl extends ServiceImpl<ThumbMapper, Thumb> implements
     private HotBlogService hotBlogService;
     @Resource
     private RabbitTemplate rabbitTemplate;
-    private HeavyKeeperRateLimiter[] heavyKeeperShards=new HeavyKeeperRateLimiter[4];
 
-    // ========== 初始化 HeavyKeeper 分片（大厂标准：单例+分片） ==========
-    @PostConstruct
-    public void init() {
-        // 初始化4个分片的HeavyKeeper，基础阈值=5次/5分钟（大厂经验值）
-        for (int i = 0; i < 4; i++) {
-            heavyKeeperShards[i] = new HeavyKeeperRateLimiter(5);
-        }
-    }
     @Override
     public void validThumb(Thumb thumb, boolean add) {
 
@@ -83,83 +74,73 @@ public class ThumbServiceImpl extends ServiceImpl<ThumbMapper, Thumb> implements
         Long userId = loginUser.getId();
 
         String blogIdStr = blogId.toString();
-        String localKey = userId + "_" + blogId;
+        // 优化：哈希槽位计算保持不变，利于分片
         int slot = userId.hashCode() & 3;
         String userLikeRedisKey = USER_LIKE_PREFIX + slot + ":" + userId;
 
-        // 1. HeavyKeeper 高频检测 (保留，防刷)
-        String hkKey = userId + "_" + blogId;
-        if (heavyKeeperShards[slot].isOverLimit(hkKey)) {
-            throw new BusinessException(ErrorCode.OPERATION_ERROR, "操作过于频繁，请5分钟后重试");
-        }
-
-        // 2. 本地缓存快速判重 (保留)
-        Boolean localLiked = userLikeLocalCache.getIfPresent(localKey);
-        if (Boolean.TRUE.equals(localLiked)) {
-            throw new BusinessException(ErrorCode.OPERATION_ERROR, "用户已点赞");
-        }
-
-        // 3. Redis 快速判重 (保留)
         RMap<String, String> userLikeMap = redissonClient.getMap(userLikeRedisKey);
+        // 1. Redis 快速判重 (第一道防线)
+        // 建议这里也用同步 get，保证读取最新状态
         if (userLikeMap.containsKey(blogIdStr)) {
-            userLikeLocalCache.put(localKey, true);
-            throw new BusinessException(ErrorCode.OPERATION_ERROR, "用户已点赞");
+            throw new BusinessException(ErrorCode.OPERATION_ERROR, "您已经点过赞了");
         }
 
-        // 4. 分布式锁 (保留，防止并发重复提交)
+        // 2. 分布式锁 (防止并发竞态条件)
         String lockKey = LOCK_LIKE_PREFIX + userId + ":" + blogId;
         RLock lock = redissonClient.getLock(lockKey);
 
         try {
-            // 尝试获取锁
-            if (!lock.tryLock(100, 1000, TimeUnit.MILLISECONDS)) {
-                throw new BusinessException(ErrorCode.OPERATION_ERROR, "请求太频繁，请稍后重试");
+            // 优化：开启看门狗 (-1)，防止业务执行时间过长导致锁自动释放
+            if (!lock.tryLock(100, -1, TimeUnit.MILLISECONDS)) {
+                throw new BusinessException(ErrorCode.OPERATION_ERROR, "手速太快啦，请稍后再试");
             }
 
-            // 5. 二次校验 (双重检查锁模式)
+            // 3. 双重检查 (Double Check) - 拿到锁后必须再查一次
             if (userLikeMap.containsKey(blogIdStr)) {
-                userLikeLocalCache.put(localKey, true);
-                throw new BusinessException(ErrorCode.OPERATION_ERROR, "用户已点赞");
+                throw new BusinessException(ErrorCode.OPERATION_ERROR, "您已经点过赞了");
             }
 
-            // --- 【核心修改】准备发送 MQ 消息，不再直接操作 DB ---
-
-            // 5.1 查询博主 ID (需要知道是谁的博客，以便消费者更新博主的总获赞数)
-            // 注意：这里需要查一次 DB 或缓存获取 blog 的 userId。如果 blog 对象有缓存最好。
+            // 4. 获取博客信息 (建议在此处增加博客存在性的缓存判断，防止穿透)
             Blog blog = blogService.getById(blogId);
             if (blog == null) {
                 throw new BusinessException(ErrorCode.NOT_FOUND_ERROR, "博客不存在");
             }
 
-            // 5.2 构建消息
+            // 5. 构建并发送 MQ 消息 (核心业务)
             BlogLikeMqDTO mqDTO = new BlogLikeMqDTO();
             mqDTO.setUserId(userId);
             mqDTO.setBlogId(blogId);
             mqDTO.setTargetUserId(blog.getUserId());
-            mqDTO.setType(1); // 1 代表点赞
+            mqDTO.setType(1);
 
-            // 5.3 发送消息
-            log.info("🚀 [点赞] 发送 MQ 消息 -> User:{}, Blog:{}", userId, blogId);
-            rabbitTemplate.convertAndSend(
-                    RabbitMqConfig.BLOG_LIKE_EXCHANGE,
-                    RabbitMqConfig.BLOG_LIKE_ROUTING_KEY,
-                    mqDTO
-            );
+            log.info("🚀 [点赞] 准备发送 MQ -> User:{}, Blog:{}", userId, blogId);
 
-            // 6. Redis 状态标记 (异步/非阻塞)
-            // 即使 MQ 发送成功，我们也要先标记用户已点赞，防止用户瞬间再次点击
-            // 使用 putAsync 不阻塞当前线程
-            userLikeMap.putAsync(blogIdStr, "1");
-            userLikeMap.expireAsync(30, TimeUnit.DAYS);
+            // 关键：同步发送，确保消息到达 Broker。如果失败，直接抛异常，后续 Redis 不会写入
+            try {
+                rabbitTemplate.convertAndSend(
+                        RabbitMqConfig.BLOG_LIKE_EXCHANGE,
+                        RabbitMqConfig.BLOG_LIKE_ROUTING_KEY,
+                        mqDTO
+                );
+            } catch (Exception e) {
+                log.error("[点赞] MQ 发送失败，操作回滚", e);
+                throw new BusinessException(ErrorCode.SYSTEM_ERROR, "点赞服务暂时不可用");
+            }
 
-            // 7. 本地缓存标记
-            userLikeLocalCache.put(localKey, true);
+            // 6. 写入 Redis 标记 (成功后的“存证”)
+            // 优化：改为同步写入，确保数据强一致性。Redis 写入极快，性能损耗可忽略
+            userLikeMap.put(blogIdStr, "1");
+            userLikeMap.expire(30, TimeUnit.DAYS);
+
+            log.info("✅ [点赞] 成功 -> User:{}, Blog:{}", userId, blogId);
             return true;
 
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            throw new BusinessException(ErrorCode.OPERATION_ERROR, "系统异常");
+            log.error("[点赞] 线程中断", e);
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "系统繁忙");
         } finally {
+            // 安全解锁
             if (lock.isHeldByCurrentThread()) {
                 lock.unlock();
             }
@@ -173,78 +154,77 @@ public class ThumbServiceImpl extends ServiceImpl<ThumbMapper, Thumb> implements
         Long userId = loginUser.getId();
 
         String blogIdStr = blogId.toString();
-        String localKey = userId + "_" + blogId;
         int slot = userId.hashCode() & 3;
         String userLikeRedisKey = USER_LIKE_PREFIX + slot + ":" + userId;
 
-        // 1. HeavyKeeper 检测 (保留)
-        String hkKey = userId + "_" + blogId;
-        if (heavyKeeperShards[slot].isOverLimit(hkKey)) {
-            throw new BusinessException(ErrorCode.OPERATION_ERROR, "操作过于频繁");
-        }
-
-        // 2. Redis 判空 (保留)
         RMap<String, String> userLikeMap = redissonClient.getMap(userLikeRedisKey);
+
+        // 1. Redis 快速判空
         if (!userLikeMap.containsKey(blogIdStr)) {
-            userLikeLocalCache.invalidate(localKey);
-            throw new BusinessException(ErrorCode.OPERATION_ERROR, "未点赞，无法取消");
+            throw new BusinessException(ErrorCode.OPERATION_ERROR, "您尚未点赞，无需取消");
         }
 
-        // 3. 分布式锁 (保留)
+        // 2. 分布式锁
         String lockKey = LOCK_LIKE_PREFIX + userId + ":" + blogId;
         RLock lock = redissonClient.getLock(lockKey);
 
         try {
-            if (!lock.tryLock(100, 1000, TimeUnit.MILLISECONDS)) {
-                throw new BusinessException(ErrorCode.OPERATION_ERROR, "请求太频繁");
+            // 优化：启用看门狗 (-1)，防止业务超时导致锁失效
+            if (!lock.tryLock(100, -1, TimeUnit.MILLISECONDS)) {
+                throw new BusinessException(ErrorCode.OPERATION_ERROR, "操作太频繁，请稍后再试");
             }
 
-            // 4. 二次校验
+            // 3. 双重检查
             if (!userLikeMap.containsKey(blogIdStr)) {
-                userLikeLocalCache.invalidate(localKey);
-                throw new BusinessException(ErrorCode.OPERATION_ERROR, "未点赞，无法取消");
+                throw new BusinessException(ErrorCode.OPERATION_ERROR, "您尚未点赞，无需取消");
             }
 
-            // --- 【核心修改】发送 MQ 消息 ---
-
-            // 4.1 查询博主 ID
+            // 4. 查询博客信息
             Blog blog = blogService.getById(blogId);
+
+            // 修正逻辑：如果博客不存在，说明数据可能不一致，不要盲目删 Redis，直接报错或尝试修复
             if (blog == null) {
-                // 博客不存在时，直接清理本地状态并返回，不需要发 MQ
-                userLikeMap.removeAsync(blogIdStr);
-                userLikeLocalCache.invalidate(localKey);
-                return true;
+                log.error("⚠️ [取消点赞] 博客不存在但 Redis 有标记 -> User:{}, Blog:{}", userId, blogId);
+                // 方案 A (推荐): 抛出异常，让用户刷新，人工介入或定时任务清理脏数据
+                throw new BusinessException(ErrorCode.NOT_FOUND_ERROR, "博客不存在，无法操作，请刷新页面");
+
+                // 方案 B (激进): 强制清理 Redis，但不发 MQ (可能导致 DB 多一条脏记录，需依赖定期对账)
+                // userLikeMap.remove(blogIdStr);
+                // return true;
             }
 
-            // 4.2 构建消息
+            // 5. 构建并发送 MQ 消息 (核心业务：通知数据库减计数)
             BlogLikeMqDTO mqDTO = new BlogLikeMqDTO();
             mqDTO.setUserId(userId);
             mqDTO.setBlogId(blogId);
             mqDTO.setTargetUserId(blog.getUserId());
             mqDTO.setType(0); // 0 代表取消点赞
 
-            // 4.3 发送消息
-            log.info("🚀 [取消点赞] 发送 MQ 消息 -> User:{}, Blog:{}", userId, blogId);
-            rabbitTemplate.convertAndSend(
-                    RabbitMqConfig.BLOG_LIKE_EXCHANGE,
-                    RabbitMqConfig.BLOG_LIKE_ROUTING_KEY,
-                    mqDTO
-            );
+            log.info("🚀 [取消点赞] 准备发送 MQ -> User:{}, Blog:{}", userId, blogId);
 
-            // 5. 清理 Redis 状态 (异步)
-            userLikeMap.removeAsync(blogIdStr);
+            // 关键：同步发送，确保消息到达
+            try {
+                rabbitTemplate.convertAndSend(
+                        RabbitMqConfig.BLOG_LIKE_EXCHANGE,
+                        RabbitMqConfig.BLOG_LIKE_ROUTING_KEY,
+                        mqDTO
+                );
+            } catch (Exception e) {
+                log.error("[取消点赞] MQ 发送失败，操作回滚", e);
+                throw new BusinessException(ErrorCode.SYSTEM_ERROR, "取消点赞失败，请稍后重试");
+            }
 
-            // 6. 清理本地缓存
-            userLikeLocalCache.invalidate(localKey);
+            // 6. 清理 Redis 标记 (同步删除，确保一致性)
+            // 只有 MQ 发送成功后，才删除本地标记
+            userLikeMap.remove(blogIdStr);
 
-            // 7. 重置 HeavyKeeper (可选，取消点赞通常不需要重置频次限制，看业务需求)
-            // heavyKeeperShards[slot].reset(hkKey);
-
+            log.info("✅ [取消点赞] 成功 -> User:{}, Blog:{}", userId, blogId);
             return true;
 
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            throw new BusinessException(ErrorCode.OPERATION_ERROR, "系统异常");
+            log.error("[取消点赞] 线程中断", e);
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "系统繁忙");
         } finally {
             if (lock.isHeldByCurrentThread()) {
                 lock.unlock();
