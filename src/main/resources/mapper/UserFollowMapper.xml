@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.liubinrui.mapper.UserFollowMapper">
+
+    <resultMap id="BaseResultMap" type="com.liubinrui.model.entity.UserFollow">
+            <id property="id" column="id" />
+            <result property="userId" column="user_id" />
+            <result property="followerId" column="follower_id" />
+            <result property="createTime" column="create_time" />
+            <result property="isCancel" column="is_cancel" />
+            <result property="lastActiveTime" column="last_active_time" />
+    </resultMap>
+
+    <sql id="Base_Column_List">
+        id,user_id,follower_id,create_time,is_cancel,last_active_time
+    </sql>
+
+    <!-- 1. 查询用户的粉丝总数（排除已取消关注的） -->
+    <select id="countFollowerByUserId" resultType="java.lang.Long">
+        SELECT COUNT(1)
+        FROM user_follow
+        WHERE user_id = #{userId}
+          AND is_cancel = 0
+    </select>
+
+    <!-- 2. 查询用户的活跃粉丝ID列表（近N天活跃，排除已取消关注的） -->
+    <select id="listActiveFollowerIds" resultType="java.lang.Long">
+        SELECT follower_id
+        FROM user_follow
+        WHERE user_id = #{userId}
+          AND is_cancel = 0
+          AND last_active_time >= DATE_SUB(NOW(), INTERVAL #{activeDays} DAY)
+    </select>
+
+    <!-- 3. 查询用户的全量粉丝ID列表（仅小V使用，排除已取消关注的） -->
+    <select id="listAllFollowerIds" resultType="java.lang.Long">
+        SELECT follower_id
+        FROM user_follow
+        WHERE user_id = #{userId}
+          AND is_cancel = 0
+    </select>
+
+    <select id="listFollowedUserDynamic" resultType="com.liubinrui.model.dto.msg.PushMsgDTO">
+        SELECT
+        blog_id AS blogId,
+        sender_id AS senderId,
+        UNIX_TIMESTAMP(create_time) * 1000 AS timestamp    <!-- 注意：需把数据库的datetime转成毫秒时间戳 -->
+        FROM message
+        WHERE
+        receiver_id = #{followerId}  <!-- 当前用户是消息接收者（粉丝） -->
+        AND is_read = 0  <!-- 未读消息（可选，也可查全部） -->
+        AND UNIX_TIMESTAMP(create_time) * 1000 > #{lastPullTime}  <!-- 增量获取 -->
+        ORDER BY create_time DESC
+    </select>
+
+    <select id="listFollowedUserIds" resultType="java.lang.Long">
+        SELECT user_id
+        FROM user_follow
+        WHERE follower_id = #{followerId}
+        AND is_cancel = 0  <!-- 只查未取消关注的 -->
+    </select>
+</mapper>
