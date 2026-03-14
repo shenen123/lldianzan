@@ -22,10 +22,5 @@ public class BlogAddRequest implements Serializable {
      */
     private String content;
 
-    /**
-     * 点赞数
-     */
-    private Integer thumbCount;
-
     private static final long serialVersionUID = 1L;
 }

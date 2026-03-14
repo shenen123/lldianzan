@@ -1,0 +1,8 @@
+# 禁用H2相关的自动配置，避免优先连接H2
+spring:
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.h2.H2ConsoleAutoConfiguration
+      - org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration  # 禁用默认数据源自动配置（交给ShardingSphere）
+
+  # 移除原有的 shardingsphere 配置，因为现在通过 Java 配置类加载

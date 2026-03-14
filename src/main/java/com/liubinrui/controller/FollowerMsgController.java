@@ -53,7 +53,6 @@ public class FollowerMsgController {
 
     /**
      * 获取未读消息列表（增量拉取）
-     *
      * @param followerId   当前用户ID
      * @param lastPullTime 上次拉取时间戳（毫秒）
      * @return 未读消息列表

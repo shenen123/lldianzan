@@ -36,7 +36,9 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 @Slf4j
 @Service
@@ -84,37 +86,30 @@ public class ThumbServiceImpl extends ServiceImpl<ThumbMapper, Thumb> implements
         if (userLikeMap.containsKey(blogIdStr)) {
             throw new BusinessException(ErrorCode.OPERATION_ERROR, "您已经点过赞了");
         }
-
         // 2. 分布式锁 (防止并发竞态条件)
         String lockKey = LOCK_LIKE_PREFIX + userId + ":" + blogId;
         RLock lock = redissonClient.getLock(lockKey);
-
         try {
             // 优化：开启看门狗 (-1)，防止业务执行时间过长导致锁自动释放
             if (!lock.tryLock(100, -1, TimeUnit.MILLISECONDS)) {
                 throw new BusinessException(ErrorCode.OPERATION_ERROR, "手速太快啦，请稍后再试");
             }
-
             // 3. 双重检查 (Double Check) - 拿到锁后必须再查一次
             if (userLikeMap.containsKey(blogIdStr)) {
                 throw new BusinessException(ErrorCode.OPERATION_ERROR, "您已经点过赞了");
             }
-
             // 4. 获取博客信息 (建议在此处增加博客存在性的缓存判断，防止穿透)
             Blog blog = blogService.getById(blogId);
             if (blog == null) {
                 throw new BusinessException(ErrorCode.NOT_FOUND_ERROR, "博客不存在");
             }
-
             // 5. 构建并发送 MQ 消息 (核心业务)
             BlogLikeMqDTO mqDTO = new BlogLikeMqDTO();
             mqDTO.setUserId(userId);
             mqDTO.setBlogId(blogId);
             mqDTO.setTargetUserId(blog.getUserId());
             mqDTO.setType(1);
-
-            log.info("🚀 [点赞] 准备发送 MQ -> User:{}, Blog:{}", userId, blogId);
-
+            log.info("🚀 [点赞] 准备发送 MQ -> UserId:{}, BlogId:{}", userId, blogId);
             // 关键：同步发送，确保消息到达 Broker。如果失败，直接抛异常，后续 Redis 不会写入
             try {
                 rabbitTemplate.convertAndSend(
@@ -156,52 +151,41 @@ public class ThumbServiceImpl extends ServiceImpl<ThumbMapper, Thumb> implements
         String blogIdStr = blogId.toString();
         int slot = userId.hashCode() & 3;
         String userLikeRedisKey = USER_LIKE_PREFIX + slot + ":" + userId;
-
         RMap<String, String> userLikeMap = redissonClient.getMap(userLikeRedisKey);
-
         // 1. Redis 快速判空
         if (!userLikeMap.containsKey(blogIdStr)) {
             throw new BusinessException(ErrorCode.OPERATION_ERROR, "您尚未点赞，无需取消");
         }
-
         // 2. 分布式锁
         String lockKey = LOCK_LIKE_PREFIX + userId + ":" + blogId;
         RLock lock = redissonClient.getLock(lockKey);
-
         try {
             // 优化：启用看门狗 (-1)，防止业务超时导致锁失效
             if (!lock.tryLock(100, -1, TimeUnit.MILLISECONDS)) {
                 throw new BusinessException(ErrorCode.OPERATION_ERROR, "操作太频繁，请稍后再试");
             }
-
             // 3. 双重检查
             if (!userLikeMap.containsKey(blogIdStr)) {
                 throw new BusinessException(ErrorCode.OPERATION_ERROR, "您尚未点赞，无需取消");
             }
-
             // 4. 查询博客信息
             Blog blog = blogService.getById(blogId);
-
             // 修正逻辑：如果博客不存在，说明数据可能不一致，不要盲目删 Redis，直接报错或尝试修复
             if (blog == null) {
                 log.error("⚠️ [取消点赞] 博客不存在但 Redis 有标记 -> User:{}, Blog:{}", userId, blogId);
                 // 方案 A (推荐): 抛出异常，让用户刷新，人工介入或定时任务清理脏数据
                 throw new BusinessException(ErrorCode.NOT_FOUND_ERROR, "博客不存在，无法操作，请刷新页面");
-
                 // 方案 B (激进): 强制清理 Redis，但不发 MQ (可能导致 DB 多一条脏记录，需依赖定期对账)
                 // userLikeMap.remove(blogIdStr);
                 // return true;
             }
-
             // 5. 构建并发送 MQ 消息 (核心业务：通知数据库减计数)
             BlogLikeMqDTO mqDTO = new BlogLikeMqDTO();
             mqDTO.setUserId(userId);
             mqDTO.setBlogId(blogId);
             mqDTO.setTargetUserId(blog.getUserId());
             mqDTO.setType(0); // 0 代表取消点赞
-
             log.info("🚀 [取消点赞] 准备发送 MQ -> User:{}, Blog:{}", userId, blogId);
-
             // 关键：同步发送，确保消息到达
             try {
                 rabbitTemplate.convertAndSend(
@@ -213,14 +197,11 @@ public class ThumbServiceImpl extends ServiceImpl<ThumbMapper, Thumb> implements
                 log.error("[取消点赞] MQ 发送失败，操作回滚", e);
                 throw new BusinessException(ErrorCode.SYSTEM_ERROR, "取消点赞失败，请稍后重试");
             }
-
             // 6. 清理 Redis 标记 (同步删除，确保一致性)
             // 只有 MQ 发送成功后，才删除本地标记
             userLikeMap.remove(blogIdStr);
-
             log.info("✅ [取消点赞] 成功 -> User:{}, Blog:{}", userId, blogId);
             return true;
-
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             log.error("[取消点赞] 线程中断", e);
@@ -290,3 +271,5 @@ public class ThumbServiceImpl extends ServiceImpl<ThumbMapper, Thumb> implements
         return null;
     }
 }
+
+

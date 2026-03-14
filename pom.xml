@@ -6,32 +6,39 @@
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
         <version>3.2.5</version>
-        <relativePath/> <!-- lookup parent from repository -->
+        <relativePath/>
     </parent>
     <groupId>com.example</groupId>
     <artifactId>lldianzan</artifactId>
     <version>0.0.1-SNAPSHOT</version>
     <name>lldianzan</name>
     <description>lldianzan</description>
-    <url/>
-    <licenses>
-        <license/>
-    </licenses>
-    <developers>
-        <developer/>
-    </developers>
-    <scm>
-        <connection/>
-        <developerConnection/>
-        <tag/>
-        <url/>
-    </scm>
+
     <properties>
-        <java.version>21</java.version>
+        <java.version>17</java.version>
         <spring-cloud-alibaba.version>2023.0.1.0</spring-cloud-alibaba.version>
+        <!-- 统一版本管理 -->
+        <shardingsphere.version>5.5.2</shardingsphere.version>
+        <snakeyaml.version>2.2</snakeyaml.version>  <!-- 改为2.2，与Spring Boot 3兼容 -->
+        <hikaricp.version>5.0.1</hikaricp.version>
+        <jaxb.version>2.3.1</jaxb.version>
     </properties>
+
     <dependencyManagement>
         <dependencies>
+            <!-- 强制 snakeyaml 版本 -->
+            <dependency>
+                <groupId>org.yaml</groupId>
+                <artifactId>snakeyaml</artifactId>
+                <version>${snakeyaml.version}</version>
+            </dependency>
+            <!-- 强制 HikariCP 版本 -->
+            <dependency>
+                <groupId>com.zaxxer</groupId>
+                <artifactId>HikariCP</artifactId>
+                <version>${hikaricp.version}</version>
+            </dependency>
+
             <!-- 核心：引入阿里云的依赖管理 -->
             <dependency>
                 <groupId>com.alibaba.cloud</groupId>
@@ -41,18 +48,19 @@
                 <scope>import</scope>
             </dependency>
 
-            <!-- 如果用了 Spring Cloud，也要引入这个 -->
+            <!-- Spring Cloud 依赖管理 -->
             <dependency>
                 <groupId>org.springframework.cloud</groupId>
                 <artifactId>spring-cloud-dependencies</artifactId>
-                <version>2023.0.1</version> <!-- 对应 SB 3.2.x -->
+                <version>2023.0.1</version>
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>
         </dependencies>
     </dependencyManagement>
+
     <dependencies>
-        <!-- Web 支持 (已包含 AOP, Validation, JSON 等) -->
+        <!-- Web 支持 -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
@@ -67,6 +75,7 @@
             <groupId>org.aspectj</groupId>
             <artifactId>aspectjweaver</artifactId>
         </dependency>
+
         <!--sentinel-->
         <dependency>
             <groupId>com.alibaba.cloud</groupId>
@@ -96,6 +105,7 @@
             <artifactId>knife4j-openapi3-jakarta-spring-boot-starter</artifactId>
             <version>4.4.0</version>
         </dependency>
+
         <!-- MyBatis-Plus (专为 Spring Boot 3 适配的版本) -->
         <dependency>
             <groupId>com.baomidou</groupId>
@@ -103,23 +113,29 @@
             <version>3.5.10.1</version>
         </dependency>
 
-        <!-- Redisson Starter（它已包含 Redis 功能） -->
+        <!-- Redisson Starter -->
         <dependency>
             <groupId>org.redisson</groupId>
             <artifactId>redisson-spring-boot-starter</artifactId>
             <version>3.21.0</version>
         </dependency>
 
-        <!-- Elasticsearch (注意：SB 3.4 可能需要检查此 starter 是否仍被官方支持，若报错需改用 elastic-java-client) -->
+        <!-- Spring Data Redis -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
+        </dependency>
+
+        <!-- Elasticsearch -->
         <dependency>
             <groupId>co.elastic.clients</groupId>
             <artifactId>elasticsearch-java</artifactId>
-            <version>8.11.0</version> <!-- 请与你 Docker 安装的版本保持一致 -->
+            <version>8.11.0</version>
         </dependency>
         <dependency>
             <groupId>org.springframework.data</groupId>
             <artifactId>spring-data-elasticsearch</artifactId>
-            <version>5.2.4</version> <!-- 根据 Spring Boot 版本调整 -->
+            <version>5.2.4</version>
         </dependency>
 
         <!-- Hutool 工具包 -->
@@ -140,7 +156,42 @@
         <dependency>
             <groupId>org.projectlombok</groupId>
             <artifactId>lombok</artifactId>
+            <version>1.18.30</version>
             <optional>true</optional>
+        </dependency>
+
+        <!-- ========== ShardingSphere 5.5.2 ========== -->
+        <dependency>
+            <groupId>org.apache.shardingsphere</groupId>
+            <artifactId>shardingsphere-jdbc</artifactId>
+            <version>${shardingsphere.version}</version>
+        </dependency>
+
+        <!-- SnakeYAML 2.2 (与Spring Boot 3兼容) -->
+        <dependency>
+            <groupId>org.yaml</groupId>
+            <artifactId>snakeyaml</artifactId>
+            <version>${snakeyaml.version}</version>
+        </dependency>
+
+        <!-- HikariCP -->
+        <dependency>
+            <groupId>com.zaxxer</groupId>
+            <artifactId>HikariCP</artifactId>
+            <version>${hikaricp.version}</version>
+        </dependency>
+
+        <!-- JAXB 依赖 (Java 17需要) -->
+        <dependency>
+            <groupId>javax.xml.bind</groupId>
+            <artifactId>jaxb-api</artifactId>
+            <version>${jaxb.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.glassfish.jaxb</groupId>
+            <artifactId>jaxb-runtime</artifactId>
+            <version>${jaxb.version}</version>
+            <scope>runtime</scope>
         </dependency>
 
         <!-- 测试依赖 -->
@@ -149,17 +200,22 @@
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
         </dependency>
+
     </dependencies>
+
     <build>
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
                 <configuration>
+                    <source>17</source>
+                    <target>17</target>
                     <annotationProcessorPaths>
                         <path>
                             <groupId>org.projectlombok</groupId>
                             <artifactId>lombok</artifactId>
+                            <version>1.18.30</version>
                         </path>
                     </annotationProcessorPaths>
                 </configuration>
@@ -177,6 +233,18 @@
                 </configuration>
             </plugin>
         </plugins>
-    </build>
 
+        <!-- 确保资源文件被打包 -->
+        <resources>
+            <resource>
+                <directory>src/main/resources</directory>
+                <includes>
+                    <include>**/*.properties</include>
+                    <include>**/*.xml</include>
+                    <include>**/*.yaml</include>
+                    <include>**/*.yml</include>
+                </includes>
+            </resource>
+        </resources>
+    </build>
 </project>

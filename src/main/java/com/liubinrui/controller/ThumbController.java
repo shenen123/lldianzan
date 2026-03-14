@@ -36,7 +36,6 @@ public class ThumbController {
     @PostMapping("/add")
     @SentinelResource(value = "thumbAdd", blockHandler = "handleThumbBlock")
     public BaseResponse<Boolean> doThumb(@RequestBody ThumbAddRequest thumbAddRequest, HttpServletRequest request) {
-
         Boolean result = thumbService.doThumb(thumbAddRequest, request);
         ThrowUtils.throwIf(!result, ErrorCode.OPERATION_ERROR);
         return ResultUtils.success(true);

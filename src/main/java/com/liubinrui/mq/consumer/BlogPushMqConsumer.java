@@ -28,7 +28,6 @@ public class BlogPushMqConsumer {
     /**
      * 消费小V推送消息（全量推活跃粉丝 + 消息表兜底）
      */
-
     // 【关键点 1】定义一个线程安全的静态计数器
     // 初始值为 0，程序重启后会重置，但在运行期间会一直累加
     private static final AtomicInteger TOTAL_COUNT = new AtomicInteger(0);
@@ -37,7 +36,7 @@ public class BlogPushMqConsumer {
     public void consumeSmallVPush(com.liubinrui.model.dto.mq.BlogPushMqDTO mqDTO) {
         // 1. 计数器 +1，并获取当前数值
         int currentCount = TOTAL_COUNT.incrementAndGet();
-        log.info("✅ [累计消费第 {} 条] 收到消息 -> ID: {}, Title: {}",
+        log.info("✅ [累计消费第 {} 条] 收到消息 -> BlogId: {}, UserId: {}",
                 currentCount, mqDTO.getBlogId(), mqDTO.getUserId());
             Long userId = mqDTO.getUserId();
             Long blogId = mqDTO.getBlogId();
@@ -91,7 +90,16 @@ public class BlogPushMqConsumer {
             throw e;
         }
     }
-
+    /**
+     * 转换MQ DTO到原有PushMsgDTO
+     */
+    private com.liubinrui.model.dto.msg.PushMsgDTO convertToPushMsgDTO(BlogPushMqDTO mqDTO) {
+        com.liubinrui.model.dto.msg.PushMsgDTO pushMsg = new com.liubinrui.model.dto.msg.PushMsgDTO();
+        pushMsg.setBlogId(mqDTO.getBlogId());
+        pushMsg.setSenderId(mqDTO.getUserId());
+        pushMsg.setTimestamp(mqDTO.getTimestamp());
+        return pushMsg;
+    }
     /**
      * 消费聚合表写入消息（中V非活跃/大V）
      */
@@ -110,16 +118,5 @@ public class BlogPushMqConsumer {
             log.error("处理聚合表写入失败，博主ID：{}", mqDTO.getUserId(), e);
             throw e;
         }
-    }
-
-    /**
-     * 转换MQ DTO到原有PushMsgDTO
-     */
-    private com.liubinrui.model.dto.msg.PushMsgDTO convertToPushMsgDTO(BlogPushMqDTO mqDTO) {
-        com.liubinrui.model.dto.msg.PushMsgDTO pushMsg = new com.liubinrui.model.dto.msg.PushMsgDTO();
-        pushMsg.setBlogId(mqDTO.getBlogId());
-        pushMsg.setSenderId(mqDTO.getUserId());
-        pushMsg.setTimestamp(mqDTO.getTimestamp());
-        return pushMsg;
     }
 }
