@@ -71,82 +71,214 @@
 
 ### 3.3 关键配置文件示例
 
-#### 📄 `application.yml` (核心配置片段)
+# ⚙️ 核心配置文件说明 (Configuration Guide)
+
+本项目配置分为两部分，均已进行**脱敏处理**。生产环境部署时，请通过环境变量或配置中心（如 Nacos）注入真实值。
+
+1. **`application.yml`**：Spring Boot 应用主配置，包含服务发现、缓存、消息队列及分库分表逻辑。
+2. **`shardingsphere-config-debug.yaml`**：ShardingSphere 独立运行时的调试配置（或作为配置中心的数据源），用于验证分片规则。
+---
+
+## 1. 应用主配置 (`application.yml`)
+
+此文件定义了微服务的基础设施连接及核心业务逻辑参数。
+
 ```yaml
 spring:
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.h2.H2ConsoleAutoConfiguration
+      - org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration
   application:
-    name: blog-thumb-service
+    name: lldianzan
+  
+  # --- Nacos 配置中心与服务发现 ---
   cloud:
     nacos:
-      discovery:
-        server-addr:  $ {NACOS_SERVER:localhost:8848}
       config:
-        server-addr:  $ {NACOS_SERVER:localhost:8848}
-        file-extension: yaml
-        shared-configs:
-          - data-id: common-config.yaml
-            refresh: true
+        # [注意] 生产环境请修改为 Nacos 集群地址或内部域名
+        server-addr: ${NACOS_SERVER:127.0.0.1:8848}
+        file-extension: json
+      discovery:
+        server-addr: ${NACOS_SERVER:127.0.0.1:8848}
+    
+    # --- Sentinel 流量防护 ---
     sentinel:
       transport:
-        dashboard:  $ {SENTINEL_DASHBOARD:localhost:8080}
+        # [注意] 生产环境请修改为 Sentinel 控制台地址
+        dashboard: ${SENTINEL_DASHBOARD:localhost:8080}
       datasource:
-        ds1:
+        flow:
           nacos:
-            server-addr:  $ {NACOS_SERVER}
-            dataId:  $ {spring.application.name}-sentinel.json
-            ruleType: flow
+            server-addr: ${NACOS_SERVER:127.0.0.1:8848}
+            data-id: ${spring.application.name}-flow-rules
+            group-id: DEFAULT_GROUP
+            rule-type: flow
+            data-type: json
+        degrade:
+          nacos:
+            server-addr: ${NACOS_SERVER:127.0.0.1:8848}
+            data-id: ${spring.application.name}-degrade-rules
+            group-id: DEFAULT_GROUP
+            rule-type: degrade
+            data-type: json
 
-  # Redisson 配置
-  redisson:
-    address: "redis:// $ {REDIS_HOST:localhost}:6379"
-    password:  $ {REDIS_PASSWORD}
-    threads: 16
-    netty-threads: 32
-    lock-watchdog-timeout: 30000 # 看门狗超时时间 (ms)
-
-  # RabbitMQ 配置
+  # --- RabbitMQ 消息队列 ---
   rabbitmq:
-    host:  $ {RABBIT_HOST:localhost}
+    # [注意] 生产环境请使用独立账号，不要使用 guest
+    host: ${RABBIT_HOST:127.0.0.1}
     port: 5672
-    username:  $ {RABBIT_USER:guest}
-    password:  $ {RABBIT_PASS:guest}
+    username: ${RABBIT_USER:guest}
+    password: ${RABBIT_PASSWORD:change_me_strong_password}
+    virtual-host: /
     listener:
       simple:
-        acknowledge-mode: manual # 手动 ACK，确保消息不丢失
-        prefetch: 10 # 限流消费，防止消费者过载
+        acknowledge-mode: auto # 建议生产环境改为 manual 手动 ack
+        concurrency: 5
+        max-concurrency: 20
+        retry:
+          enabled: true
+          max-attempts: 3
+          initial-interval: 1000ms
+          multiplier: 2.0
+          max-interval: 10000ms
+    template:
+      retry:
+        enabled: true
+        max-attempts: 3
+        initial-interval: 1000ms
+      mandatory: true
 
-  # ShardingSphere 分库分表配置
-  shardingsphere:
-    datasource:
-      names: ds0,ds1
-      ds0:
-        type: com.zaxxer.hikari.HikariDataSource
-        driver-class-name: com.mysql.cj.jdbc.Driver
-        jdbc-url: jdbc:mysql://db0:3306/thumb_db_0?useSSL=false&serverTimezone=UTC
-      ds1:
-        type: com.zaxxer.hikari.HikariDataSource
-        driver-class-name: com.mysql.cj.jdbc.Driver
-        jdbc-url: jdbc:mysql://db1:3306/thumb_db_1?useSSL=false&serverTimezone=UTC
-    rules:
-      sharding:
-        tables:
-          thumb:
-            actual-data-nodes: ds $ ->{0..1}.thumb_ $ ->{0..3}
-            table-strategy:
-              standard:
-                sharding-column: blog_id
-                sharding-algorithm-name: blog-inline
-        sharding-algorithms:
-          blog-inline:
-            type: INLINE
-            props:
-              algorithm-expression: thumb_ $ ->{blog_id % 4}
+  # --- Elasticsearch 搜索引擎 ---
+  elasticsearch:
+    uris: http://${ES_HOST:localhost}:9200
 
-# HeavyKeeper 热点检测配置
-heavy-keeper:
-  enabled: true
-  depth: 5           # 二维数组行数 d (哈希函数个数)
-  width: 4096        # 每行桶数 w (决定内存大小)
-  top-k: 100         # 维护 Top 100 热点
-  decay-factor: 0.9  # 衰减因子 (0-1)，越小遗忘越快
-  min-count: 10      # 进入 Top-K 的最小频率门槛
+  profiles:
+    active: debug
+
+  # --- Redis 缓存 ---
+  redis:
+    host: ${REDIS_HOST:127.0.0.1}
+    port: 6379
+    database: 3
+    timeout: 5000ms
+    # [注意] 如果有密码请取消注释并配置
+    # password: ${REDIS_PASSWORD:}
+
+  # --- Redisson 分布式锁 ---
+  redisson:
+    config:
+      singleServerConfig:
+        address: "redis://${REDIS_HOST:127.0.0.1}:6379"
+        database: 3
+        timeout: 5000
+        connectionMinimumIdleSize: 10
+        connectionPoolSize: 64
+        # password: ${REDIS_PASSWORD:}
+
+# --- API 文档配置 (Knife4j/Swagger) ---
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+    tags-sorter: alpha
+    operations-sorter: alpha
+  api-docs:
+    path: /v3/api-docs
+  group-configs:
+    - group: 'default'
+      paths-to-match: '/**'
+      packages-to-scan: com.liubinrui.controller
+
+knife4j:
+  enable: true
+  setting:
+    language: zh_cn
+
+# --- 服务器配置 ---
+server:
+  address: 0.0.0.0
+  port: 8120
+  servlet:
+    context-path: /api
+    session:
+      cookie:
+        max-age: 2592000 # 30天
+
+# --- MyBatis Plus 配置 ---
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl # 生产环境建议关闭或改为 warn
+  global-config:
+    db-config:
+      logic-delete-field: isDelete
+      logic-delete-value: 1
+      logic-not-delete-value: 0
+      id-type: ASSIGN_ID  # 雪花算法生成 ID
+
+# --- 业务自定义配置 ---
+blog:
+  follow:
+    active-days: 30
+  push:
+    small-v: 5
+    medium-v: 100000
+
+## 2. ShardingSphere配置 (`shardingsphere-config-debug.yaml`)
+# 数据源配置
+dataSources:
+  ds_0:
+    dataSourceClassName: com.zaxxer.hikari.HikariDataSource
+    driverClassName: com.mysql.cj.jdbc.Driver
+    # [注意] 生产环境请修改 IP 并使用环境变量注入密码
+    jdbcUrl: jdbc:mysql://${DB_HOST:localhost}:3306/dianzan?useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&characterEncoding=utf-8
+    username: ${DB_USER:root}
+    password: ${DB_PASSWORD:change_me_strong_password}
+    maximumPoolSize: 20
+    minimumIdle: 5
+    connectionTimeout: 30000
+    idleTimeout: 60000
+    maxLifetime: 1800000
+
+# 分片规则
+rules:
+  - !SHARDING
+    tables:
+      thumb:
+        # 逻辑表 thumb 映射到物理表 thumb_0 到 thumb_127
+        actualDataNodes: ds_0.thumb_${0..127}
+        
+        tableStrategy:
+          standard:
+            shardingColumn: blog_id
+            # 使用自定义类进行分片计算
+            shardingAlgorithmName: thumb-mod-algo
+
+        keyGenerateStrategy:
+          column: id
+          keyGeneratorName: snowflake
+
+    shardingAlgorithms:
+      thumb-mod-algo:
+        type: CLASS_BASED
+        props:
+          strategy: STANDARD
+          # [重要] 确保该类路径在你的项目中存在且正确
+          algorithmClassName: com.liubinrui.config.sharding.BlogIdModShardingAlgorithm
+
+    keyGenerators:
+      snowflake:
+        type: SNOWFLAKE
+        props:
+          # [注意] 集群部署时，每个节点的 worker-id 必须唯一
+          worker-id: 1
+
+  # 单表规则：自动管理未分片的表
+  - !SINGLE
+    tables:
+      - "*.*"
+    defaultDataSource: ds_0
+
+# 属性配置
+props:
+  sql-show: true # [警告] 生产环境务必设置为 false，避免日志打印影响性能
