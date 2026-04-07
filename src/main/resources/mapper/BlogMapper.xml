@@ -6,79 +6,93 @@
 
     <resultMap id="BaseResultMap" type="com.liubinrui.model.entity.Blog">
         <id property="id" column="id" jdbcType="BIGINT"/>
-        <result property="userId" column="user_id" jdbcType="BIGINT"/>
-        <result property="title" column="title" jdbcType="VARCHAR"/>
-        <result property="content" column="content" jdbcType="VARCHAR"/>
-        <result property="thumbCount" column="thumb_count" jdbcType="INTEGER"/>
-        <result property="hotScore" column="hot_score" jdbcType="INTEGER"/>
-        <result property="createTime" column="create_time" jdbcType="TIMESTAMP"/>
-        <result property="updateTime" column="update_time" jdbcType="TIMESTAMP"/>
+        <result property="userId" column="user_id" />
+        <result property="title" column="title" />
+        <result property="content" column="content" />
+        <result property="thumbCount" column="thumb_count" />
+        <result property="hotScore" column="hot_score" />
+        <result property="createTime" column="create_time" />
+        <result property="updateTime" column="update_time" />
     </resultMap>
 
     <sql id="Base_Column_List">
-        id,userId,title,content,thumb_count,hot_score
+        id,user_id,title,content,thumb_count,hot_score
         create_time,update_time
     </sql>
 
-    <update id="addThumb">
-        update blog
-        set thumb_count=thumb_count + 1
-        where id = #{blogId}
-    </update>
-
-    <update id="subThumb">
-        update blog
-        set thumb_count=thumb_count - 1
-        where id = #{blogId}
-    </update>
-
+    <!--    CASE WHEN 必须包含 ELSE，否则当 id 不匹配时会返回 NULL-->
     <update id="batchUpdateThumbCount">
         UPDATE blog
-        SET thumb_count = thumb_count + CASE id
-        <foreach collection="countMap.entrySet()" item="value" index="key">
-            WHEN #{key} THEN #{value}
-        </foreach>
-        END
+        SET thumb_count = thumb_count + #{count}
         WHERE id IN
-        <foreach collection="countMap.keySet()" item="id" open="(" separator="," close=")">
+        <foreach collection="thumbList" item="id" open="(" separator="," close=")">
             #{id}
         </foreach>
     </update>
-
-    <update id="incrementThumbCount">
-        UPDATE blog
-        SET thumb_count = GREATEST(thumb_count + #{delta}, 0)
-        WHERE id = #{blogId}
-        AND thumb_count + #{delta} >= 0;
-    </update>
-
-    <update id="updateBatchLikeCount">
-        update blog
-        set thumb_count =
-        <foreach collection="list" item="item" separator=" " open="case id" close="end">
-            when #{item.id} then #{item.likeCount}
-        </foreach>
-        where id in
-        <foreach collection="list" item="item" open="(" separator="," close=")">
-            #{item.id}
-        </foreach>
-    </update>
-
-    <select id="selectAllblogId" resultType="java.lang.Long">
-        SELECT id FROM blog
-    </select>
 
     <!-- 批量更新博客热度值：batchUpdateHotScore -->
     <update id="batchUpdateHotScore">
         UPDATE blog
         SET hot_score = CASE id
-        <foreach collection="list" item="item" separator="">
+        <foreach collection="updateList" item="item" separator=" ">
             WHEN #{item.id} THEN #{item.hotScore}
         </foreach>
-        END
+        ELSE hot_score
+        END,
+        update_time = NOW()
         WHERE id IN
-        <foreach collection="list" item="item" open="(" separator="," close=")">
+        <foreach collection="updateList" item="item" open="(" separator="," close=")">
             #{item.id}
         </foreach>
     </update>
+
+    <select id="selectIdByCursor" resultType="java.lang.Long">
+        select id from blog
+        <where>
+            <if test="lastId != null">
+                id &gt; #{lastId}
+            </if>
+        </where>
+        ORDER BY id ASC
+        LIMIT #{batchSize}
+    </select>
+
+    <select id="selectByCursor" resultType="com.liubinrui.model.entity.Blog">
+        select * from blog
+        <where>
+            <if test="lastId != null">
+                id &gt; #{lastId}
+            </if>
+        </where>
+        ORDER BY id ASC
+        limit #{batchSize}
+    </select>
+
+
+    <select id="selectHotByCursor" resultType="com.liubinrui.model.entity.Blog">
+        select * from blog
+        <where>
+            <if test="lastId != null">
+                id &gt; #{lastId}
+            </if>
+            AND hot_score &gt;= #{hotScore}
+        </where>
+        ORDER BY id ASC
+        LIMIT #{batchSize}
+    </select>
+
+    <select id="rebuildBox" resultType="com.liubinrui.model.entity.Blog">
+        select * from blog
+        WHERE
+        <!-- 1. 筛选博主：发布者必须在 followIds 列表中 -->
+        user_id IN
+        <foreach collection="followIds" item="id" open="(" separator="," close=")">
+            #{id}
+        </foreach>
+        AND
+        <!-- 2. 筛选时间：发布时间大于 '一周前' (即最近一周内) -->
+        create_time >= #{time}
+        <!-- 3. 排序：按发布时间升序 (即：最早发布的在前，最新的在后) -->
+        ORDER BY create_time ASC
+    </select>
 </mapper>

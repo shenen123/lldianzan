@@ -1,0 +1,31 @@
+spring:
+  # 数据库配置
+  datasource:
+    url: jdbc:mysql://localhost:3306/dianzan?useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+    username: root
+    password: 1234
+
+  # RabbitMQ 连接信息
+  rabbitmq:
+    host: 127.0.0.1
+    port: 5672
+    username: guest
+    password: guest
+
+  # Redis 连接信息
+  data:
+    redis:
+      host: 127.0.0.1
+      port: 6379
+      database: 3
+
+  # Redisson 连接信息
+  redisson:
+    config:
+      singleServerConfig:
+        address: "redis://127.0.0.1:6379"
+        database: 3
+
+# 如果 Elasticsearch 生产环境地址不同，这里也可以覆盖
+elasticsearch:
+  uris: http://localhost:9200

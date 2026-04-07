@@ -10,23 +10,21 @@ import org.springframework.data.redis.serializer.StringRedisSerializer;
 @Configuration
 public class RedisConfig {
 
-    /**
-     * 配置 RedisTemplate Bean
-     * 解决报错：required a bean of type 'RedisTemplate' that could not be found
-     */
     @Bean
-    public RedisTemplate<String, Long> redisTemplate(RedisConnectionFactory connectionFactory) {
-        RedisTemplate<String, Long> template = new RedisTemplate<>();
+    public RedisTemplate<String, Object> redisTemplate(RedisConnectionFactory connectionFactory) {
+        RedisTemplate<String, Object> template = new RedisTemplate<>();
         template.setConnectionFactory(connectionFactory);
 
-        // Key 序列化
-        template.setKeySerializer(new StringRedisSerializer());
-        // Hash Key 序列化
-        template.setHashKeySerializer(new StringRedisSerializer());
+        // 1. Key 和 HashKey 使用 String 序列化，保证键的可读性
+        StringRedisSerializer stringSerializer = new StringRedisSerializer();
+        template.setKeySerializer(stringSerializer);
+        template.setHashKeySerializer(stringSerializer);
 
-        // 使用 GenericToStringSerializer<Long>，它会将 Long 直接转为字符串 "100"
-        template.setValueSerializer(new GenericToStringSerializer<>(Long.class));
-        template.setHashValueSerializer(new GenericToStringSerializer<>(Long.class));
+        // 2. Value 和 HashValue 使用 JSON 序列化，保证值的可读性和通用性
+        // GenericJackson2JsonRedisSerializer 可以将任意对象转为 JSON 字符串
+        GenericJackson2JsonRedisSerializer jsonSerializer = new GenericJackson2JsonRedisSerializer();
+        template.setValueSerializer(jsonSerializer);
+        template.setHashValueSerializer(jsonSerializer);
 
         template.afterPropertiesSet();
         return template;

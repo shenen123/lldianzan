@@ -10,16 +10,6 @@ import java.io.Serializable;
 public class BlogQueryRequest extends PageRequest implements Serializable {
 
     /**
-     * id
-     */
-    private Long id;
-
-    /**
-     * id
-     */
-    private Long notId;
-
-    /**
      * 搜索词
      */
     private String searchText;
@@ -38,11 +28,6 @@ public class BlogQueryRequest extends PageRequest implements Serializable {
      * 内容
      */
     private String content;
-
-    /**
-     * 点赞数
-     */
-    private Integer thumbCount;
 
     private static final long serialVersionUID = 1L;
 }

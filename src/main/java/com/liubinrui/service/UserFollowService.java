@@ -1,6 +1,9 @@
 package com.liubinrui.service;
 
 
+import com.liubinrui.model.dto.follow.UserFollowRequest;
+import jakarta.servlet.http.HttpServletRequest;
+
 public interface UserFollowService {
     /**
      *用户关注博主
@@ -8,7 +11,7 @@ public interface UserFollowService {
      * @param followerId
      * @return
      */
-    boolean followUser(Long userId, Long followerId);
+    void addFollow(UserFollowRequest userFollowRequest,HttpServletRequest httpRequest);
 
     /**
      * 用户取消关注博主
@@ -16,7 +19,6 @@ public interface UserFollowService {
      * @param followerId
      * @return
      */
-    boolean cancelFollow(Long userId, Long followerId);
+    void cancelFollow(UserFollowRequest userFollowRequest, HttpServletRequest httpRequest);
 
-    void migrateToStarTable(Long userId);
 }

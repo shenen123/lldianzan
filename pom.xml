@@ -76,7 +76,7 @@
             <artifactId>aspectjweaver</artifactId>
         </dependency>
 
-        <!--sentinel-->
+        <!--sentinel 集结nacos-->
         <dependency>
             <groupId>com.alibaba.cloud</groupId>
             <artifactId>spring-cloud-starter-alibaba-sentinel</artifactId>
@@ -192,6 +192,15 @@
             <artifactId>jaxb-runtime</artifactId>
             <version>${jaxb.version}</version>
             <scope>runtime</scope>
+        </dependency>
+        <!--监控机制-->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
         </dependency>
 
         <!-- 测试依赖 -->

@@ -10,12 +10,13 @@ import java.util.Properties;
 
 public class BlogIdModShardingAlgorithm implements StandardShardingAlgorithm<Long> {
 
-    private static final int SHARDING_COUNT = 128;
+    private static final int SHARDING_COUNT = 16;
 
     @Override
     public String doSharding(Collection<String> availableTargetNames,
                              PreciseShardingValue<Long> shardingValue) {
         Long blogId = shardingValue.getValue();
+
         // 对于精确查询，直接取模定位到具体的表
         String tableName = "thumb_" + (blogId % SHARDING_COUNT);
 

@@ -23,18 +23,18 @@ import jakarta.annotation.Resource;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
 
 @RestController
 @RequestMapping("/thumb")
 @Slf4j
 public class ThumbController {
-
-    @Resource
+    @Autowired
     private ThumbService thumbService;
 
     @PostMapping("/add")
-    @SentinelResource(value = "thumbAdd", blockHandler = "handleThumbBlock")
+    //@SentinelResource(value = "thumbAdd", blockHandler = "handleThumbBlock")
     public BaseResponse<Boolean> doThumb(@RequestBody ThumbAddRequest thumbAddRequest, HttpServletRequest request) {
         Boolean result = thumbService.doThumb(thumbAddRequest, request);
         ThrowUtils.throwIf(!result, ErrorCode.OPERATION_ERROR);
@@ -51,8 +51,6 @@ public class ThumbController {
     @PostMapping("/delete")
     public BaseResponse<Boolean> deleteThumb(@RequestBody ThumbDeleteRequest deleteRequest, HttpServletRequest request) {
         Boolean result = thumbService.undoThumb(deleteRequest, request);
-        return ResultUtils.success(true);
+        return ResultUtils.success(result);
     }
-
-
 }

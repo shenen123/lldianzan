@@ -10,25 +10,27 @@ import org.apache.ibatis.annotations.Select;
 import java.util.Date;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 public interface BlogMapper extends BaseMapper<Blog> {
 
-    boolean addThumb(Long blogId);
+    void batchUpdateThumbCount(@Param("thumbList") Set<Long> thumbList, @Param("count") int count);
+    //批量更新热度值
+    void batchUpdateHotScore(@Param("updateList") List<Blog> updateList);
 
-    boolean subThumb(Long blogId);
+    List<Long> selectIdByCursor(long lastId, int batchSize);
 
-    void batchUpdateThumbCount(@Param("countMap") Map<Long, Long> countMap);
+    List<Blog> selectByCursor(long lastId, int batchSize);
 
-    void incrementThumbCount(Long blogId, Integer delta);
+    @Select("SELECT * FROM blog ORDER BY id LIMIT #{offset}, #{batchSize}")
+    List<Blog> selectPageList(@Param("offset") int offset, @Param("batchSize") int batchSize);
 
-    List<Long> selectAllblogId();
+    List<Blog> selectHotByCursor(Long lastId, int hotScore, int batchSize);
 
-    void updateBatchLikeCount(@Param("list") List<Blog> list);
+    @Select("select * from blog where create_time>= #{oldDate} OR update_time >= #{oldDate}")
+    List<Blog> selectAfterDate(Date oldDate);
 
-    @Select("select * from blog where update_time >= #{minUpdateTime}")
-    List<Blog> listblog(Date fiveMinutesAgoDate);
-
-    void batchUpdateHotScore(List<Blog> updateList);
+    List<Blog> rebuildBox(@Param("followIds")Set<Long> followIds, @Param("time")Long time);
 }
 
 

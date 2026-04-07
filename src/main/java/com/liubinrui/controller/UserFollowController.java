@@ -1,7 +1,13 @@
 package com.liubinrui.controller;
 
+import com.liubinrui.common.BaseResponse;
+import com.liubinrui.common.ErrorCode;
+import com.liubinrui.common.ResultUtils;
+import com.liubinrui.exception.ThrowUtils;
+import com.liubinrui.model.dto.follow.UserFollowRequest;
 import com.liubinrui.service.UserFollowService;
 import jakarta.annotation.Resource;
+import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.*;
 
@@ -15,44 +21,18 @@ public class UserFollowController {
     @Resource
     private UserFollowService userFollowService;
 
-    /**
-     * 关注用户接口
-     * @param userId 被关注者ID（博主）
-     * @param followerId 粉丝ID
-     * @return 操作结果
-     */
     @PostMapping("/add")
-    public Map<String, Object> followUser(@RequestParam Long userId, @RequestParam Long followerId) {
-        Map<String, Object> result = new HashMap<>();
-        try {
-            boolean success = userFollowService.followUser(userId, followerId);
-            result.put("success", success);
-            result.put("msg", success ? "关注成功" : "已关注，无需重复关注");
-        } catch (Exception e) {
-            result.put("success", false);
-            result.put("msg", "关注失败：" + e.getMessage());
-        }
-        return result;
+    public BaseResponse<Boolean> addFollow(@RequestBody UserFollowRequest userFollowRequest, HttpServletRequest request) {
+        ThrowUtils.throwIf(userFollowRequest == null, ErrorCode.PARAMS_ERROR);
+
+        userFollowService.addFollow(userFollowRequest,request);
+        return ResultUtils.success(true);
     }
 
-    /**
-     * 取消关注接口
-     * @param userId 被关注者ID（博主）
-     * @param followerId 粉丝ID
-     * @return 操作结果
-     */
     @PostMapping("/cancel")
-    public Map<String, Object> cancelFollow(@RequestParam Long userId, @RequestParam Long followerId) {
-        Map<String, Object> result = new HashMap<>();
-        try {
-            boolean success = userFollowService.cancelFollow(userId, followerId);
-            result.put("success", success);
-            result.put("msg", success ? "取消关注成功" : "未关注，无需取消");
-        } catch (Exception e) {
-            result.put("success", false);
-            result.put("msg", "取消关注失败：" + e.getMessage());
-        }
-        return result;
+    public BaseResponse<Boolean> cancelFollow(@RequestBody UserFollowRequest userFollowRequest, HttpServletRequest request) {
+        ThrowUtils.throwIf(userFollowRequest == null, ErrorCode.PARAMS_ERROR);
+        userFollowService.cancelFollow(userFollowRequest,request);
+        return ResultUtils.success(true);
     }
-
 }

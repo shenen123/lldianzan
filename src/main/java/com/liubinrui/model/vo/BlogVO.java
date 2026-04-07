@@ -35,14 +35,8 @@ public class BlogVO implements Serializable {
      */
     private Long userId;
 
-    /**
-     * 创建时间
-     */
     private Date createTime;
 
-    /**
-     * 更新时间
-     */
     private Date updateTime;
 
     private Integer hotScore;
@@ -51,21 +45,4 @@ public class BlogVO implements Serializable {
      */
     private UserVO user;
 
-    public static Blog voToObj(BlogVO blogVO) {
-        if (blogVO == null) {
-            return null;
-        }
-        Blog blog = new Blog();
-        BeanUtils.copyProperties(blogVO, blog);
-        return blog;
-    }
-
-    public static BlogVO objToVo(Blog blog) {
-        if (blog == null) {
-            return null;
-        }
-        BlogVO blogVO = new BlogVO();
-        BeanUtils.copyProperties(blog, blogVO);
-        return blogVO;
-    }
 }

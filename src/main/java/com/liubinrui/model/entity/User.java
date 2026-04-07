@@ -6,7 +6,7 @@ import lombok.Data;
 import java.io.Serializable;
 import java.util.Date;
 
-@TableName(value ="user")
+@TableName(value = "user")
 @Data
 public class User implements Serializable {
 
@@ -25,6 +25,7 @@ public class User implements Serializable {
 
     private Date updateTime;
 
+    private Date lastLoginTime;
     @TableLogic
     private Integer isDelete;
 

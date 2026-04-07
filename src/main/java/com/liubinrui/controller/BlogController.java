@@ -23,7 +23,6 @@ import com.liubinrui.service.BlogPushService;
 import com.liubinrui.service.BlogService;
 import com.liubinrui.service.UserService;
 import com.liubinrui.service.impl.HotBlogService;
-import jakarta.annotation.Resource;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.BeanUtils;
@@ -31,7 +30,6 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
-import java.util.Objects;
 import java.util.stream.Collectors;
 
 
@@ -40,12 +38,11 @@ import java.util.stream.Collectors;
 @Slf4j
 public class BlogController {
 
-    @Resource
+    @Autowired
     private BlogService blogService;
-
-    @Resource
+    @Autowired
     private UserService userService;
-    @Resource
+    @Autowired
     private BlogPushService blogPushService;
     @Autowired
     private HotBlogService hotBlogService;
@@ -64,6 +61,8 @@ public class BlogController {
         ThrowUtils.throwIf(!result, ErrorCode.OPERATION_ERROR);
         // 返回新写入的数据 id
         long newBlogId = blog.getId();
+        // 更新布隆过滤器
+        hotBlogService.onBlogCreated(blog);
         // 异步推送（不阻塞发布接口）
         blogPushService.asyncPushBlogToFollowers(blog);
         return ResultUtils.success(newBlogId);
@@ -76,9 +75,11 @@ public class BlogController {
         }
         User user = userService.getLoginUser(request);
         long id = deleteRequest.getId();
+
         // 判断是否存在
         Blog oldblog = blogService.getById(id);
         ThrowUtils.throwIf(oldblog == null, ErrorCode.NOT_FOUND_ERROR);
+
         // 仅本人或管理员可删除
         if (!oldblog.getUserId().equals(user.getId()) && !userService.isAdmin(request)) {
             throw new BusinessException(ErrorCode.NO_AUTH_ERROR);
@@ -86,6 +87,7 @@ public class BlogController {
         // 操作数据库
         boolean result = blogService.removeById(id);
         ThrowUtils.throwIf(!result, ErrorCode.OPERATION_ERROR);
+        hotBlogService.onBlogDeleted(oldblog.getId());
         return ResultUtils.success(true);
     }
 
@@ -112,12 +114,11 @@ public class BlogController {
         return ResultUtils.success(true);
     }
 
-    @GetMapping("/get/vo")
-    public BaseResponse<BlogVO> getBlogVOById(long id) {
-        ThrowUtils.throwIf(ObjUtil.isEmpty(id) || id <= 0, ErrorCode.PARAMS_ERROR);
-        // 优先从热门缓存获取
-        Blog hotBlog = hotBlogService.getBlog(id);
-        return ResultUtils.success(BlogVO.objToVo(hotBlog));
+
+    @GetMapping("/get")
+    public BaseResponse<Blog> getBlogVOById(@RequestParam Long blogId) {
+        Blog hotBlog = hotBlogService.getBlog(blogId);
+        return ResultUtils.success(hotBlog);
     }
 
     @PostMapping("/list/page")
@@ -154,13 +155,14 @@ public class BlogController {
     )
     @PostMapping("/search/page/vo")
     public BaseResponse<Page<BlogVO>> searchVOByPage(@RequestBody BlogQueryRequest questionQueryRequest,
-                                                             HttpServletRequest request) {
-        try {
-            Thread.sleep(3000);
-            log.warn("【测试熔断】模拟慢查询，休眠了 3 秒...");
-        } catch (InterruptedException e) {
-            e.printStackTrace();
-        }
+                                                     HttpServletRequest request) {
+        //熔断测试代码
+//        try {
+//            Thread.sleep(3000);
+//            log.warn("【测试熔断】模拟慢查询，休眠了 3 秒...");
+//        } catch (InterruptedException e) {
+//            e.printStackTrace();
+//        }
         long size = questionQueryRequest.getPageSize();
         // 限制爬虫
         ThrowUtils.throwIf(size > 200, ErrorCode.PARAMS_ERROR);
@@ -168,10 +170,6 @@ public class BlogController {
         return ResultUtils.success(blogService.getblogVOPage(questionPage, request));
     }
 
-    /**
-     * 限流或熔断后的兜底方法
-     * 注意：该方法必须与原方法在同一类中，且参数列表要多一个 BlockException 类型参数
-     */
     public BaseResponse<Page<BlogVO>> handleSearchBlock(BlogQueryRequest questionQueryRequest,
                                                         HttpServletRequest request,
                                                         BlockException ex) {
@@ -184,37 +182,40 @@ public class BlogController {
         // throw new BusinessException(ErrorCode.SYSTEM_ERROR, "访问人数过多，请稍后再试");
     }
 
-    //查询我收到的点赞
-//    @PostMapping("/search/my/thumb")
-//    public BaseResponse<List<Blog>> searchThumbedQuestionVO(HttpServletRequest request) {
-//        User loginUser = userService.getLoginUser(request);
-//        List<Blog> blogList = blogService.searchThumbed(loginUser);
-//        return ResultUtils.success(blogList);
-//    }
 
     @PostMapping("/search/hot/top")
-    public Page<BlogVO> getHotBlogTopN(int pageNum, int pageSize, HttpServletRequest request) {
+    public BaseResponse<Page<Blog>> getHotBlogTopN(int pageNum, int pageSize) {
         // 获取热门博客ID列表
+        long startTime = System.currentTimeMillis();
         List<Long> hotBlogIds = hotBlogService.getHotBlogTopN();
+        log.info("查询TopN的热门博客内存查询耗费时间:{}ms", System.currentTimeMillis() - startTime);
         // 分页处理
         int start = (pageNum - 1) * pageSize;
         int end = Math.min(start + pageSize, hotBlogIds.size());
         // 若起始位置超过总长度，返回空列表
         if (start >= hotBlogIds.size()) {
-            return new Page<>(pageNum, pageSize, 0);
+            return ResultUtils.success(new Page<>(pageNum, pageSize, 0));
         }
-        // 从全量列表中，“切”出当前页需要的 ID 子列表。这是一个视图操作，非常快，不涉及数据库查询。
-        List<Long> pageBlogIds = hotBlogIds.subList(start, end);
-
-        // 转换为BlogVO列表
-        List<BlogVO> blogVOList = pageBlogIds.stream()
-                .map(hotBlogService::getBlog)
-                .filter(Objects::nonNull)
-                .map(BlogVO::objToVo)
-                .collect(Collectors.toList());
-
-        Page<BlogVO> page = new Page<>(pageNum, pageSize, hotBlogIds.size());
+        List<Long> blogIds = hotBlogIds.subList(start, end);
+        // 转换为Blog列表
+        List<Blog> blogVOList = hotBlogService.batchGetBlog(blogIds);   // 这个性能真的强，之前stream查询需要2s，现在100ms
+        Page<Blog> page = new Page<>(pageNum, pageSize, hotBlogIds.size());
         page.setRecords(blogVOList);
-        return page;
+        log.info("查询TopN的热门博客总耗费时间:{}ms", System.currentTimeMillis() - startTime);
+        return ResultUtils.success(page);
+    }
+
+    @PostMapping("/search/dymatic")
+    public BaseResponse<Page<Blog>> getDymatic(int pageNum, int pageSize, HttpServletRequest request) {
+        User loginUser = userService.getLoginUser(request);
+        if (loginUser == null)
+            throw new BusinessException(ErrorCode.NOT_LOGIN_ERROR);
+
+        long time = System.currentTimeMillis();
+        Page<Blog> blogPage = blogService.listDymaticBlog(time, pageNum, pageSize, loginUser.getId());
+
+        if (blogPage.getRecords().isEmpty())
+            log.info("未查询到任何动态消息");
+        return ResultUtils.success(blogPage);
     }
 }

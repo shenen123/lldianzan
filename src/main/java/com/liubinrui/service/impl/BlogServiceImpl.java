@@ -1,73 +1,64 @@
 package com.liubinrui.service.impl;
 
-import cn.hutool.core.collection.CollUtil;
-import cn.hutool.core.util.ObjUtil;
-import cn.hutool.core.util.StrUtil;
-import co.elastic.clients.elasticsearch._types.FieldValue;
-import co.elastic.clients.elasticsearch._types.SortOptions;
-import co.elastic.clients.elasticsearch._types.SortOrder;
-import co.elastic.clients.elasticsearch._types.query_dsl.BoolQuery;
-import co.elastic.clients.elasticsearch._types.query_dsl.Query;
-import co.elastic.clients.elasticsearch._types.query_dsl.QueryBuilders;
-import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
-import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.github.xiaoymin.knife4j.core.util.StrUtil;
 import com.liubinrui.common.ErrorCode;
 import com.liubinrui.constant.CommonConstant;
 import com.liubinrui.exception.ThrowUtils;
 import com.liubinrui.mapper.BlogMapper;
-import com.liubinrui.mapper.ThumbMapper;
-import com.liubinrui.mapper.UserFollowMapper;
 import com.liubinrui.model.dto.blog.BlogEsDTO;
 import com.liubinrui.model.dto.blog.BlogQueryRequest;
 import com.liubinrui.model.entity.Blog;
 import com.liubinrui.model.entity.User;
 import com.liubinrui.model.vo.BlogVO;
 import com.liubinrui.model.vo.UserVO;
+import com.liubinrui.redis.RedisBlogPushService;
+import com.liubinrui.redis.RedisNullCache;
+import com.liubinrui.redis.RedisUserFollowService;
+import com.liubinrui.repository.BlogEsRepository;
 import com.liubinrui.service.BlogService;
 
 import java.util.*;
 
 import com.liubinrui.service.UserService;
 import com.liubinrui.utils.SqlUtils;
-import jakarta.annotation.Resource;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
+import org.redisson.api.RLock;
+import org.redisson.api.RedissonClient;
+import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.context.annotation.Lazy;
 import org.springframework.data.domain.PageRequest;
-import org.springframework.data.elasticsearch.client.elc.NativeQuery;
-import org.springframework.data.elasticsearch.core.ElasticsearchOperations;
-import org.springframework.data.elasticsearch.core.SearchHit;
-import org.springframework.data.elasticsearch.core.SearchHits;
-import org.springframework.data.elasticsearch.core.mapping.IndexCoordinates;
 import org.springframework.stereotype.Service;
 
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 @Service
 @Slf4j
 public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements BlogService {
 
-    @Resource
+    @Autowired
     private UserService userService;
-    @Resource
+    @Autowired
     private BlogMapper blogMapper;
     @Autowired
-    @Lazy
-    private UserFollowMapper userFollowMapper;
+    private RedisNullCache redisNullCache;
     @Autowired
-    private ThumbMapper thumbMapper;
-    @Resource
-    private final ElasticsearchOperations elasticsearchOperations;
-
-
-    public BlogServiceImpl(ElasticsearchOperations elasticsearchOperations) {
-        this.elasticsearchOperations = elasticsearchOperations;
-    }
+    private RedissonClient redissonClient;
+    @Autowired
+    private BlogEsRepository blogEsRepository;
+    @Autowired
+    private RedisBlogPushService redisBlogPushService;
+    @Autowired
+    private RedisUserFollowService redisUserFollowService;
+    @Autowired
+    private HotBlogService hotBlogService;
 
     @Override
     public void validblog(Blog blog, boolean add) {
@@ -88,267 +79,289 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements Bl
         if (blogQueryRequest == null) {
             return queryWrapper;
         }
-
-        Long id = blogQueryRequest.getId();
-        Long notId = blogQueryRequest.getNotId();
         String searchText = blogQueryRequest.getSearchText();
         Long userId = blogQueryRequest.getUserId();
         String title = blogQueryRequest.getTitle();
         String content = blogQueryRequest.getContent();
-        Integer thumbCount = blogQueryRequest.getThumbCount();
         String sortField = blogQueryRequest.getSortField();
         String sortOrder = blogQueryRequest.getSortOrder();
-        if (StringUtils.isNotBlank(searchText)) {
-            // 需要拼接查询条件
-            queryWrapper.and(qw -> qw.like("title", searchText).or().like("content", searchText));
+
+        if (StrUtil.isNotBlank(searchText)) {
+            queryWrapper.and(qw -> qw.like("title", title).or().like("content", content));
+
         }
-        // 模糊查询
-        queryWrapper.like(StringUtils.isNotBlank(title), "title", title);
-        queryWrapper.like(StringUtils.isNotBlank(content), "content", content);
-        // 精确查询
-        queryWrapper.eq(id != null && id > 0, "id", id);
-        queryWrapper.eq(notId != null && notId > 0, "id", notId);
-        queryWrapper.eq(userId != null && userId > 0, "user_id", userId);
-        queryWrapper.eq(thumbCount != null && thumbCount > 0, "thumb_count", thumbCount);
-        // 排序规则
+        queryWrapper.eq(userId != null, "user_id", userId);
+
         queryWrapper.orderBy(SqlUtils.validSortField(sortField),
                 sortOrder.equals(CommonConstant.SORT_ORDER_ASC),
                 sortField);
         return queryWrapper;
-    }
 
-    @Override
-    public BlogVO getblogVO(Blog blog, HttpServletRequest request) {
-        // 对象转封装类
-        BlogVO blogVO = BlogVO.objToVo(blog);
-        Long userId = blog.getUserId();
-        User user = null;
-        if (userId != null && userId > 0) {
-            user = userService.getById(userId);
-        }
-        UserVO userVO = userService.getUserVO(user);
-        blogVO.setUser(userVO);
-
-        return blogVO;
     }
 
     @Override
     public Page<BlogVO> getblogVOPage(Page<Blog> blogPage, HttpServletRequest request) {
-        List<Blog> blogList = blogPage.getRecords();
-        Page<BlogVO> blogVOPage = new Page<>(blogPage.getCurrent(), blogPage.getSize(), blogPage.getTotal());
-        if (CollUtil.isEmpty(blogList)) {
-            return blogVOPage;
-        }
-        // 对象列表 => 封装对象列表
-        List<BlogVO> blogVOList = blogList.stream().map(BlogVO::objToVo).collect(Collectors.toList());
-        Set<Long> userIdSet = blogList.stream().map(Blog::getUserId).collect(Collectors.toSet());
-        Map<Long, List<User>> userIdUserListMap = userService.listByIds(userIdSet).stream()
-                .collect(Collectors.groupingBy(User::getId));
 
-        blogVOList.forEach(blogVO -> {
-            Long userId = blogVO.getUserId();
-            User user = null;
-            if (userIdUserListMap.containsKey(userId)) {
-                user = userIdUserListMap.get(userId).get(0);
-            }
-            blogVO.setUser(userService.getUserVO(user));
-        });
+        if (blogPage.getRecords().isEmpty())
+            return new Page<>();
+        List<Blog> blogList = blogPage.getRecords();
+
+        Set<Long> userIds = blogList.stream().map(Blog::getUserId).collect(Collectors.toSet());
+        Map<Long, User> userMap = userService.listByIds(userIds).stream()
+                .collect(Collectors.toMap(User::getId, Function.identity()));
+
+        // 转换为 BlogVO
+        List<BlogVO> blogVOList = blogList.stream()
+                .map(blog -> {
+                    BlogVO blogVO = new BlogVO();
+                    BeanUtils.copyProperties(blog, blogVO);
+
+                    User user = userMap.get(blog.getUserId());
+                    if (user != null) {
+                        UserVO userVO = new UserVO();
+                        BeanUtils.copyProperties(user, userVO);
+                        blogVO.setUser(userVO);
+                    }
+
+                    return blogVO;
+                })
+                .collect(Collectors.toList());
+
+        // 构建分页结果
+        Page<BlogVO> blogVOPage = new Page<>(blogPage.getCurrent(), blogPage.getSize());
         blogVOPage.setRecords(blogVOList);
+        blogVOPage.setTotal(blogPage.getTotal());
+
         return blogVOPage;
     }
 
     @Override
     public Page<Blog> searchFromEs(BlogQueryRequest request) {
+        if (request == null)
+            return new Page<>();
+        String searchKey = generateSearchCacheKey(request);
+        String searchNullKey = redisNullCache.buildSearchNullKey(searchKey);
+        if (redisNullCache.isNull(searchNullKey)) {
+            log.info("Redis空搜索缓存命中: {}", searchKey);
+            return new Page<>();
+        }
         try {
-            // 1. 尝试执行 ES 查询
-            log.debug("Attempting to search from Elasticsearch...");
-            return searchFromEsInternal(request);
+            Page<Blog> blogPage = searchFromEsInternal(request);
+            if (blogPage == null || blogPage.getRecords().isEmpty())
+                redisNullCache.setNull(searchNullKey);
+            return blogPage;
         } catch (Exception e) {
-            // 2. 捕获所有 ES 相关异常 (ConnectException, SocketTimeoutException, etc.)
-            log.error("Elasticsearch search failed, switching to Database fallback. Error: {}", e.getMessage(), e);
-            // 3.执行降级逻辑：查数据库,DB 查询通常不支持全文检索，只能做模糊匹配或精确匹配，功能会减弱
-            return listBlogByPage(request);
+            log.info("从ES中查询数据失败");
+            // 降级，从DB中查询
+            return searchFromDbWithLock(request, searchNullKey);
         }
     }
 
-    //数据库分页查询
-    public Page<Blog> listBlogByPage(BlogQueryRequest request) {
-        ThrowUtils.throwIf(request == null, ErrorCode.PARAMS_ERROR);
-
-        int current = request.getCurrent();
-        int pageSize = request.getPageSize();
-        QueryWrapper<Blog> queryWrapper = this.getQueryWrapper(request);
-        return this.page(new Page<>(current, pageSize), queryWrapper);
-    }
-
-    public Page<Blog> searchFromEsInternal(BlogQueryRequest blogQueryRequest) {
-        // 1. 获取参数并做严格的安全校验
-        Long id = blogQueryRequest.getId();
-        String searchText = blogQueryRequest.getSearchText();
-        Long userId = blogQueryRequest.getUserId();
-        String sortField = blogQueryRequest.getSortField();
-        String sortOrder = blogQueryRequest.getSortOrder();
-
-        // 分页参数安全处理（避免负数/0，限制最大页大小）
-        int current = Math.max((ObjUtil.isEmpty(blogQueryRequest.getCurrent()) ? 1 : blogQueryRequest.getCurrent()) - 1, 0);
-        int pageSize = ObjUtil.isEmpty(blogQueryRequest.getPageSize()) ? 10 : blogQueryRequest.getPageSize();
-
-        // 2. 构建 Bool 查询（核心修复：处理空条件）
-        BoolQuery.Builder boolBuilder = new BoolQuery.Builder();
-        boolean hasFilter = false;
-        boolean hasShould = false;
-
-        // A. 精确过滤条件（只处理 >0 的有效值，避免无效查询）
-        if (id != null && id > 0) {
-            boolBuilder.filter(f -> f.term(t -> t.field("id").value(FieldValue.of(id))));
-            hasFilter = true;
-        }
-        if (userId != null && userId > 0) {
-            boolBuilder.filter(f -> f.term(t -> t.field("user_id").value(FieldValue.of(userId))));
-            hasFilter = true;
-        }
-
-        // B. 全文检索条件（只处理非空/非空白字符串，适配IK分词）
-        if (StrUtil.isNotBlank(searchText)) {
-            hasShould = true;
-            // 标题匹配（使用IK最大分词，与ES映射一致）
-            boolBuilder.should(s -> s.match(m -> m
-                    .field("title")
-                    .query(searchText)
-                    .analyzer("ik_max_word")
-            ));
-            // 内容匹配（同理）
-            boolBuilder.should(s -> s.match(m -> m
-                    .field("content")
-                    .query(searchText)
-                    .analyzer("ik_max_word")
-            ));
-            // 至少匹配一个should条件
-            boolBuilder.minimumShouldMatch("1");
-        }
-
-        // 核心修复：无任何有效条件时，执行matchAll（匹配所有文档），避免空Bool查询
-        Query finalQuery;
-        if (hasFilter || hasShould) {
-            finalQuery = Query.of(q -> q.bool(boolBuilder.build()));
-        } else {
-            finalQuery = Query.of(q -> q.matchAll(m -> m)); // 兜底查询：匹配所有文档
-        }
-
-        // 3. 构建排序规则（修复：校验字段合法性，简化默认排序）
-        List<co.elastic.clients.elasticsearch._types.SortOptions> sortOptions = new ArrayList<>();
-        // 定义ES中合法的排序字段（与映射完全一致）
-        List<String> validSortFields = Arrays.asList("id", "user_id", "thumb_count", "create_time", "update_time", "visit");
-
-        if (StrUtil.isNotBlank(sortField)) {
-            // 转换前端字段名到ES字段名（驼峰转下划线）
-            String esField = convertToEsField(sortField);
-            // 校验字段合法性，非法字段默认用create_time
-            if (!validSortFields.contains(esField)) {
-                log.warn("非法排序字段：{}，默认使用create_time排序", sortField);
-                esField = "create_time";
-            }
-            // 确定排序方向（默认降序）
-            SortOrder order = "asc".equalsIgnoreCase(sortOrder) ? SortOrder.Asc : SortOrder.Desc;
-            String finalEsField = esField;
-            sortOptions.add(co.elastic.clients.elasticsearch._types.SortOptions.of(so -> so
-                    .field(f -> f
-                            .field(finalEsField)
-                            .order(order)
-                    )
-            ));
-        } else {
-            // 默认排序：按创建时间降序（简化规则，避免多排序叠加异常）
-            sortOptions.add(co.elastic.clients.elasticsearch._types.SortOptions.of(so -> so
-                    .field(f -> f
-                            .field("create_time")
-                            .order(SortOrder.Desc)
-                    )
-            ));
-        }
-
-        // 4. 构建NativeQuery（标准化分页，确保总条数准确）
-        NativeQuery nativeQuery = NativeQuery.builder()
-                .withQuery(finalQuery)          // 填入最终查询（matchAll/Bool）
-                .withSort(sortOptions)          // 填入合法的排序规则
-                .withPageable(PageRequest.of(current, pageSize)) // 标准化分页
-                .withTrackTotalHits(true)       // 确保返回准确总条数
-                .build();
-
-        log.info("执行ES搜索 - 索引: blog, 起始位置: {}, 页大小: {}, 检索关键词: {}, 查询条件: {}",
-                current * pageSize, pageSize, searchText, finalQuery.toString());
-
+    private Page<Blog> searchFromDbWithLock(BlogQueryRequest request, String searchNullKey) {
+        log.info("开始从DB中查询数据");
+        // 构建锁
+        Page<Blog> blogPage = new Page<>(request.getCurrent(), request.getPageSize());
+        String lockKey = "lock:blog:search:db:" + searchNullKey;
+        RLock lock = redissonClient.getLock(lockKey);
         try {
-            // 5. 执行搜索（显式指定索引，避免注解不一致问题）
-            SearchHits<BlogEsDTO> searchHits = elasticsearchOperations.search(
-                    nativeQuery,
-                    BlogEsDTO.class,
-                    IndexCoordinates.of("blog") // 强制指定实际存在的索引名
-            );
-
-            // 6. 结果转换与分页封装（保持原有逻辑）
-            long total = searchHits.getTotalHits();
-            Page<Blog> page = new Page<>(
-                    ObjUtil.isEmpty(blogQueryRequest.getCurrent()) ? 1 : blogQueryRequest.getCurrent(),
-                    ObjUtil.isEmpty(blogQueryRequest.getPageSize()) ? 10 : blogQueryRequest.getPageSize(),
-                    total
-            );
-
-            List<Blog> resourceList = new ArrayList<>();
-            if (searchHits.hasSearchHits()) {
-                resourceList = searchHits.getSearchHits().stream()
-                        .map(SearchHit::getContent)
-                        .map(BlogEsDTO::objToObj) // 复用原有DTO转BO方法
-                        .collect(Collectors.toList());
+            if (lock.tryLock(3, 10, TimeUnit.SECONDS)) {
+                try {
+                    // 双重检查Redis空值缓存
+                    if (redisNullCache.isNull(searchNullKey)) {
+                        return new Page<>();
+                    }
+                    List<Blog> blogList = blogMapper.selectList(getQueryWrapper(request));
+                    if (blogList == null || blogList.isEmpty()) {
+                        redisNullCache.setNull(searchNullKey);
+                    }
+                    blogPage.setRecords(blogList);
+                } finally {
+                    if (lock.isHeldByCurrentThread()) {
+                        lock.unlock();
+                    }
+                }
+            } else {
+                log.info("没有抢到锁");
             }
-            page.setRecords(resourceList);
 
-            return page;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.error("获取锁被中断", e);
         } catch (Exception e) {
-            // 打印详细异常（含ES原始错误），方便定位问题
-            log.error("ES搜索失败 - 参数: {}", blogQueryRequest, e);
-            throw new RuntimeException("搜索服务异常：" + e.getMessage(), e);
+            log.error("DB降级查询失败", e);
+            return new Page<>();
         }
+        return blogPage;
     }
 
-    /**
-     * 字段名转换：前端驼峰字段 → ES下划线字段（适配映射）
-     *
-     * @param sortField 前端传入的排序字段
-     * @return ES中的合法字段名
-     */
-    private String convertToEsField(String sortField) {
-        if (StrUtil.isBlank(sortField)) {
-            return "create_time";
+    private Page<Blog> searchFromEsInternal(BlogQueryRequest request) {
+        log.info("开始从ES中查询数据");
+        if (request == null) {
+            return new Page<>();
         }
-        // 按实际业务场景扩展字段映射
-        return switch (sortField) {
-            case "thumbCount" -> "thumb_count";
-            case "createTime" -> "create_time";
-            case "updateTime" -> "update_time";
-            case "userId" -> "user_id";
-            case "visitCount" -> "visit"; // 前端可能传visitCount，对应ES的visit字段
-            default -> sortField.toLowerCase(); // 其他字段默认转小写（如id→id）
-        };
+
+        int current = Math.max(request.getCurrent(), 1);
+        int size = request.getPageSize();
+        PageRequest pageRequest = PageRequest.of(current - 1, size);
+
+        // 必须指明，否则会和mybatis的冲突
+        org.springframework.data.domain.Page<BlogEsDTO> esPage;
+
+        if (request.getUserId() != null && request.getUserId() > 0
+                && StringUtils.isNotBlank(request.getSearchText())) {
+            // 两个条件都有：组合查询
+            esPage = blogEsRepository.searchByUserIdOrKeywords(
+                    request.getUserId(), request.getSearchText(), pageRequest);
+        } else if (request.getUserId() != null && request.getUserId() > 0) {
+            // 只有用户ID
+            esPage = blogEsRepository.findByUserId(request.getUserId(), pageRequest);
+        } else if (StringUtils.isNotBlank(request.getSearchText())) {
+            // 只有关键词
+            esPage = blogEsRepository.searchByKeywords(request.getSearchText(), pageRequest);
+        } else {
+            // 都没有
+            esPage = blogEsRepository.findAll(pageRequest);
+        }
+
+        // 转换结果
+        Page<Blog> blogPage = new Page<>(current, size);
+        blogPage.setRecords(esPage.getContent().stream()
+                .map(BlogEsDTO::objToObj)
+                .collect(Collectors.toList()));
+        blogPage.setTotal(esPage.getTotalElements());
+
+        return blogPage;
     }
 
-    /**
-     * 从博客表拉取关注博主的最新博客
-     */
+    private String generateSearchCacheKey(BlogQueryRequest request) {
+        return String.format("%d:%d:%d:%s", request.getCurrent(),
+                request.getPageSize(),
+                request.getUserId() != null ? request.getUserId() : 0,
+                request.getSearchText() != null ? request.getSearchText() : "");
+    }
+
+    // TODO 是否需要线程池 如果这里没有又要重建缓存，需要有降级机制，但是降级也不对，我没法查数据库呀
     @Override
-    public List<Blog> listFollowedUserBlog(Long followerId, Long lastPullTime) {
-        // 1. 先获取当前用户关注的所有博主ID
-        Set<Long> followedUserIds = userFollowMapper.listFollowedUserIds(followerId);
-        if (followedUserIds.isEmpty()) {
-            return List.of();
+    public Page<Blog> listDymaticBlog(Long time, int pageNum, int pageSize, Long followerId) {
+        Page<Blog> blogPage = new Page<>(pageNum, pageSize);
+
+        // 1. 参数校验与默认值
+        if (time == null) {
+            time = System.currentTimeMillis();
         }
 
-        // 2. 拉取这些博主在lastPullTime之后发布的博客
-        LambdaQueryWrapper<Blog> queryWrapper = new LambdaQueryWrapper<>();
-        queryWrapper.in(Blog::getUserId, followedUserIds)  // 博主ID在关注列表中
-                .gt(Blog::getCreateTime, new java.util.Date(lastPullTime))  // 增量获取
-                .orderByDesc(Blog::getCreateTime);  // 按发布时间倒序
+        // 2. 获取关注列表 (核心数据源)
+        Set<Long> followIds = redisUserFollowService.getFollowIds(followerId);
+        if (followIds.isEmpty()) {
+            log.info("用户 {} 未关注任何人", followerId);
+            blogPage.setRecords(Collections.emptyList());
+            blogPage.setTotal(0);
+            return blogPage;
+        }
 
-        return blogMapper.selectList(queryWrapper);
+        // 3. 核心逻辑：尝试从缓存获取博客ID
+        Set<Long> blogIdSet = new LinkedHashSet<>(); // 使用 LinkedHashSet 保持插入顺序（虽然这里主要靠后续排序）
+        boolean cacheHit = true;
+
+        try {
+            // A. 获取收件箱 (推模式)
+            Set<Long> inBoxIds = redisBlogPushService.getFromInbox(followerId);
+            log.info("自己信箱收到{}条消息",inBoxIds.size());
+            // B. 获取发件箱 (拉模式/兜底): 查询关注者最近一周的发件箱
+            Set<Long> outBoxIds = redisBlogPushService.getFromOutBox(followIds, time);
+            log.info("从博主拉取收到{}条消息",outBoxIds.size());
+            // C. 合并：收件箱为主，发件箱为辅 (去重)
+            if (inBoxIds != null && !inBoxIds.isEmpty()) {
+                blogIdSet.addAll(inBoxIds);
+            }
+            if (outBoxIds != null && !outBoxIds.isEmpty()) {
+                blogIdSet.addAll(outBoxIds);
+            }
+
+            // 如果两者都为空，说明缓存中没有数据（可能是新用户或数据过期）
+            if (blogIdSet.isEmpty()) {
+                cacheHit = false;
+                log.warn("用户 {} 动态流缓存未命中，需异步重建", followerId);
+            }
+
+        } catch (Exception e) {
+            // 防御性编程：缓存查询出错不应导致业务中断
+            log.error("用户 {} 查询动态流缓存异常: {}", followerId, e.getMessage(), e);
+            cacheHit = false;
+        }
+        // 4. 异步重建缓存 (如果缓存未命中)  重要：不要阻塞主线程等待重建完成
+        if (!cacheHit) {
+            // 立即返回一个空页面，同时异步去数据库捞数据重建 Redis
+            Long finalTime = time;
+            CompletableFuture.runAsync(() -> {
+                try {
+                    List<Blog> freshBlogs = blogMapper.rebuildBox(followIds, finalTime - 604800 * 1000L);
+                    redisBlogPushService.rebuildBox(followerId, freshBlogs);
+                } catch (Exception ex) {
+                    log.error("异步重建用户 {} 动态流缓存失败", followerId, ex);
+                }
+            });
+            // 方案 B：返回空，提示“暂无数据”
+            blogPage.setRecords(Collections.emptyList());
+            blogPage.setTotal(0);
+            return blogPage;
+        }
+
+        // 但为了修复你当前的逻辑，我们先按 ID 查详情，然后内存分页。
+        // 计算分页
+        int total = blogIdSet.size();
+        List<Long> allBlogIdList = new ArrayList<>(blogIdSet);
+
+        // 简单的内存分页（注意：这不是按时间排序的，只是按 ID 获取）
+        int start = (pageNum - 1) * pageSize;
+        if (start >= total) {
+            blogPage.setRecords(Collections.emptyList());
+            blogPage.setTotal(total);
+            return blogPage;
+        }
+        List<Long> pageBlogIds = allBlogIdList.subList(start, Math.min(start + pageSize, total));
+
+        // 6. 批量查询博客详情
+        // 这里需要一个批量查询接口，不要循环查 DB
+        List<Blog> blogList =hotBlogService.batchGetBlog(pageBlogIds);
+
+        // 7. 设置结果
+        blogPage.setRecords(blogList);
+        blogPage.setTotal(total);
+
+        log.info("用户 {} 动态消息查询完成，总条数: {}, 当前页条数: {}, 缓存命中: {}",
+                followerId, total, blogList.size(), cacheHit);
+        return blogPage;
     }
+    // 新的方法
+//    public Page<BlogEsDTO> searchWithOrConditions(Long userId, String keyword, Pageable pageable) {
+//        // 动态构建查询
+//        BoolQueryBuilder boolQuery = QueryBuilders.boolQuery();
+//
+//        // 根据情况添加条件（这些条件之间是 OR 关系）
+//        if (userId != null && userId > 0) {
+//            boolQuery.should(QueryBuilders.termQuery("userId", userId));
+//        }
+//
+//        if (StringUtils.hasText(keyword)) {
+//            boolQuery.should(QueryBuilders.multiMatchQuery(keyword, "title", "content"));
+//        }
+//
+//        // 如果没有条件，返回空结果
+//        if (boolQuery.should().isEmpty()) {
+//            return Page.empty(pageable);
+//        }
+//
+//        // 至少匹配一个条件
+//        boolQuery.minimumShouldMatch(1);
+//
+//        Query query = new NativeSearchQueryBuilder()
+//                .withQuery(boolQuery)
+//                .withPageable(pageable)
+//                .build();
+//
+//        SearchHits<BlogEsDTO> searchHits = elasticsearchRestTemplate.search(query, BlogEsDTO.class);
+//        return SearchHitSupport.page(searchHits, pageable);
+
+
 }

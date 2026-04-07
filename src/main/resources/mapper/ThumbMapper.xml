@@ -6,28 +6,28 @@
 
     <resultMap id="BaseResultMap" type="com.liubinrui.model.entity.Thumb">
         <id property="id" column="id" jdbcType="BIGINT"/>
-        <result property="userId" column="userId" jdbcType="BIGINT"/>
-        <result property="blogId" column="blogId" jdbcType="BIGINT"/>
-        <result property="createTime" column="createTime" jdbcType="TIMESTAMP"/>
+        <result property="userId" column="user_id" jdbcType="BIGINT"/>
+        <result property="blogId" column="blog_id" jdbcType="BIGINT"/>
+        <result property="createTime" column="create_time" jdbcType="TIMESTAMP"/>
     </resultMap>
 
     <sql id="Base_Column_List">
-        id,userId,blogId,createTime
+        id, user_id, blog_id, create_time
     </sql>
 
     <insert id="batchInsertIgnore">
-        INSERT IGNORE INTO thumb (userId, blogId, createTime)
+        INSERT IGNORE INTO thumb (user_id, blog_id, create_time)
         VALUES
-        <foreach collection="list" item="item" separator=",">
+        <foreach collection="thumbList" item="item" separator=",">
             (#{item.userId}, #{item.blogId}, #{item.createTime})
         </foreach>
     </insert>
 
-    <delete id="batchDeleteByUserAnalog">
+    <delete id="batchDelete">
         DELETE FROM thumb
-        WHERE (userId, blogId) IN
-        <foreach collection="list" item="param" open="(" close=")" separator=",">
-            (#{param.userId}, #{param.blogId})
+        WHERE
+        <foreach collection="deleteList" item="item" separator="OR">
+            (user_id = #{item.userId} AND blog_id = #{item.blogId})
         </foreach>
     </delete>
 

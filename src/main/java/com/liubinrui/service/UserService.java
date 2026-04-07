@@ -1,5 +1,4 @@
 package com.liubinrui.service;
-
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.service.IService;
 import com.liubinrui.model.dto.user.UserQueryRequest;
@@ -7,7 +6,6 @@ import com.liubinrui.model.entity.User;
 import com.liubinrui.model.vo.LoginUserVO;
 import com.liubinrui.model.vo.UserVO;
 import jakarta.servlet.http.HttpServletRequest;
-
 import java.util.List;
 
 public interface UserService extends IService<User> {
@@ -46,7 +44,7 @@ public interface UserService extends IService<User> {
      * @param request
      * @return
      */
-    User getLoginUserPermitNull(HttpServletRequest request);
+    //User getLoginUserPermitNull(HttpServletRequest request);
 
     /**
      * 是否为管理员

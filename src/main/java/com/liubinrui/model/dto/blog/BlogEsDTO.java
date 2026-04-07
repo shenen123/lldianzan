@@ -32,10 +32,6 @@ public class BlogEsDTO implements Serializable {
     // 同样需要映射 thumb_count
     @Field(name = "thumb_count", type = FieldType.Integer)
     private Integer thumbCount;
-
-    @Field(name = "visit", type = FieldType.Integer)
-    private Integer visit;
-
     // 日期类型也需要指定格式，确保与 Mapping 一致
     @Field(name = "create_time", type = FieldType.Date, format = {}, pattern = DATE_TIME_PATTERN)
     private Date createTime;

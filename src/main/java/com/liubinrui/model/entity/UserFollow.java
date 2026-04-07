@@ -22,6 +22,4 @@ public class UserFollow {
     private LocalDateTime createTime;
 
     private Integer isCancel;  // 是否取消关注：0-未取消 1-已取消
-
-    private LocalDateTime lastActiveTime; // 粉丝最后活跃时间（用于冷热分离）
 }

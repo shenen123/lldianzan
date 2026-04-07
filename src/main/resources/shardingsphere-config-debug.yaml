@@ -1,52 +1,72 @@
-# 数据源配置
 dataSources:
-  ds_0:
+  master:
     dataSourceClassName: com.zaxxer.hikari.HikariDataSource
     driverClassName: com.mysql.cj.jdbc.Driver
-    jdbcUrl: jdbc:mysql://localhost:3306/dianzan?useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&characterEncoding=utf-8
+    jdbcUrl: jdbc:mysql://127.0.0.1:3306/dianzan?useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&characterEncoding=UTF-8
     username: root
     password: 1234
-    maximumPoolSize: 20
-    minimumIdle: 5
-    connectionTimeout: 30000
-    idleTimeout: 60000
-    maxLifetime: 1800000
 
-# 分片规则
+  slave01:
+    dataSourceClassName: com.zaxxer.hikari.HikariDataSource
+    driverClassName: com.mysql.cj.jdbc.Driver
+    jdbcUrl: jdbc:mysql://127.0.0.1:3307/dianzan?useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&characterEncoding=UTF-8
+    username: root
+    password: 1234
+
+  slave02:
+    dataSourceClassName: com.zaxxer.hikari.HikariDataSource
+    driverClassName: com.mysql.cj.jdbc.Driver
+    jdbcUrl: jdbc:mysql://127.0.0.1:3308/dianzan?useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&characterEncoding=UTF-8
+    username: root
+    password: 1234
+
 rules:
+  - !READWRITE_SPLITTING
+    dataSourceGroups:
+      rw_ds:
+        writeDataSourceName: master
+        readDataSourceNames:
+          - slave01
+          - slave02
+        transactionalReadQueryStrategy: PRIMARY
+        loadBalancerName: round_robin
+    loadBalancers:
+      round_robin:
+        type: ROUND_ROBIN
+
   - !SHARDING
     tables:
       thumb:
-        actualDataNodes: ds_0.thumb_${0..127}
+        actualDataNodes: rw_ds.thumb_${0..15}
         tableStrategy:
           standard:
             shardingColumn: blog_id
-            shardingAlgorithmName: thumb-mod-algo
-        keyGenerateStrategy:
-          column: id
-          keyGeneratorName: snowflake
+            shardingAlgorithmName: thumb_mod_algo
+
+      user_follow:
+        actualDataNodes: rw_ds.user_follow_${0..15}
+        tableStrategy:
+          standard:
+            shardingColumn: user_id
+            shardingAlgorithmName: follow_dynamic_algo
 
     shardingAlgorithms:
-      thumb-mod-algo:
+      thumb_mod_algo:
         type: CLASS_BASED
         props:
           strategy: STANDARD
           algorithmClassName: com.liubinrui.config.sharding.BlogIdModShardingAlgorithm
 
-    keyGenerators:
-      snowflake:
-        type: SNOWFLAKE
+      follow_dynamic_algo:
+        type: CLASS_BASED
         props:
-          worker-id: 1
+          strategy: STANDARD
+          algorithmClassName: com.liubinrui.config.sharding.DynamicFollowShardingAlgorithm
 
-  # ========== 新增：单表规则 ==========
   - !SINGLE
     tables:
-      # 加载所有未配置分片规则的表（推荐，省事）
-      - "*.*"
-    # 执行建表语句时的默认数据源
-    defaultDataSource: ds_0
+      - rw_ds.blog
+      - rw_ds.user
 
-# 属性配置
 props:
   sql-show: true

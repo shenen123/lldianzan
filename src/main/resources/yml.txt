@@ -1,0 +1,119 @@
+spring:
+  application:
+    name: lldianzan
+
+  # 移除 datasource 的具体值，只保留结构占位
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    # url, username, password 移到 dev 文件中
+
+  cloud:
+    nacos:
+      config:
+        server-addr: 127.0.0.1:8848
+        file-extension: json
+    sentinel:
+      transport:
+        dashboard: localhost:8080
+      datasource:
+        flow:
+          nacos:
+            server-addr: 127.0.0.1:8848
+            data-id: ${spring.application.name}-flow-rules
+            group-id: DEFAULT_GROUP
+            rule-type: flow
+            data-type: json
+        degrade:
+          nacos:
+            server-addr: 127.0.0.1:8848
+            data-id: ${spring.application.name}-degrade-rules
+            group-id: DEFAULT_GROUP
+            rule-type: degrade
+            data-type: json
+
+  # RabbitMQ 配置（保留通用逻辑，移除具体连接信息）
+  rabbitmq:
+    # host, port, username, password 移到 dev 文件中
+    virtual-host: /
+    listener:
+      simple:
+        acknowledge-mode: auto
+        concurrency: 5
+        max-concurrency: 20
+        retry:
+          enabled: true
+          max-attempts: 3
+          initial-interval: 1000ms
+          multiplier: 2.0
+          max-interval: 10000ms
+    template:
+      retry:
+        enabled: true
+        max-attempts: 3
+        initial-interval: 1000ms
+      mandatory: true
+
+  # Elasticsearch 配置
+  elasticsearch:
+    uris: http://localhost:9200 # 如果生产也是本地，可保留；否则也建议移到 dev
+
+  # 重点：这里改为 dev
+  profiles:
+    active: dev # 👈 改在这里！
+
+  data:
+    redis:
+      # host, port, database 移到 dev 文件中
+      timeout: 5000ms
+      lettuce:
+        pool:
+          max-active: 8
+          max-idle: 8
+          min-idle: 0
+          max-wait: -1ms
+
+  # Redisson 配置
+  redisson:
+    config:
+      singleServerConfig:
+        # address, database 移到 dev 文件中
+        timeout: 5000
+        connectionMinimumIdleSize: 10
+        connectionPoolSize: 64
+
+# 其他通用配置保持不变
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+  # ... 其他 swagger 配置
+
+knife4j:
+  enable: true
+  # ... 其他 knife4j 配置
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+  global-config:
+    db-config:
+      logic-delete-field: isDelete
+      logic-delete-value: 1
+      logic-not-delete-value: 0
+      id-type: ASSIGN_ID
+
+# 自定义业务配置（保留）
+blog:
+  follow:
+    active-days: 30
+  push:
+    small-v: 5
+    medium-v: 100000
+
+# 管理端点
+management:
+  endpoints:
+    web:
+      exposure:
+        include: prometheus,health
+  # ... 其他 management 配置

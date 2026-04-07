@@ -6,11 +6,8 @@ import com.baomidou.mybatisplus.extension.service.IService;
 import com.liubinrui.model.dto.blog.BlogQueryRequest;
 
 import com.liubinrui.model.entity.Blog;
-import com.liubinrui.model.entity.User;
 import com.liubinrui.model.vo.BlogVO;
 import jakarta.servlet.http.HttpServletRequest;
-
-import java.util.List;
 
 public interface BlogService extends IService<Blog> {
 
@@ -27,14 +24,6 @@ public interface BlogService extends IService<Blog> {
      * @return
      */
     QueryWrapper<Blog> getQueryWrapper(BlogQueryRequest blogQueryRequest);
-    
-    /**
-     * 获取博客封装
-     * @param blog
-     * @param request
-     * @return
-     */
-    BlogVO getblogVO(Blog blog, HttpServletRequest request);
 
     /**
      * 分页获取博客封装
@@ -51,11 +40,6 @@ public interface BlogService extends IService<Blog> {
      */
     Page<Blog> searchFromEs(BlogQueryRequest request);
 
-    /**
-     * 从博客表拉取关注博主的最新博客
-     * @param followerId 粉丝ID（当前用户）
-     * @param lastPullTime 最后拉取时间戳（毫秒）
-     * @return 博客列表
-     */
-    List<Blog> listFollowedUserBlog(Long followerId, Long lastPullTime);
+
+    Page<Blog> listDymaticBlog(Long time, int pageNum, int pageSize, Long followerId);
 }
